@@ -1,6 +1,7 @@
 # Binaries
 programa
 GO-MULTITOOL
+teste
 
 # Log and temporary files
 *.log
@@ -21,6 +22,6 @@ net_logs/
 .vscode/
 
 # Third-party tools
-
+osint_tools/
 .aider*
 .codex
