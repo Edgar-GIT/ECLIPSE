@@ -1,0 +1,26 @@
+# Binaries
+programa
+GO-MULTITOOL
+
+# Log and temporary files
+*.log
+*.tmp
+*.swp
+
+# JSON files
+*.json
+
+# Report directories
+image_reports/
+osint_reports/
+net_logs/
+
+# IDE and OS files
+.DS_Store
+.idea/
+.vscode/
+
+# Third-party tools
+
+.aider*
+.codex
