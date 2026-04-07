@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"programa/scripts/dos"
 	"programa/scripts/garbageinjector"
 	"programa/scripts/imganalysis"
 	"programa/scripts/ipscanner"
@@ -197,6 +198,8 @@ func main() {
 			ScannerMenu()
 		case "2":
 			osint.OSINTToolkit()
+		case "5":
+			dos.DoSMenu()
 		case "6":
 			imganalysis.ImageAnalysis()
 		case "7":
