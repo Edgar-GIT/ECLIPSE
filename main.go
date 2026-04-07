@@ -18,78 +18,161 @@ import (
 )
 
 func Menu() {
-	leftPad := "        "
-	gap := "  "
+	leftPad := "            "
+	gap := "      "
 	intro := "The only multitool 🛠  you will ever need - v1.0.0 - https://github.com/Edgar-GIT"
 	title := "TOOLS"
 
 	col1 := []string{
-		"[1]  - IP Scanner",
-		"[2]  - Port Scanner",
-		"[3]  - OSINT",
-		"[4]  - PC Utilities",
-		"[5]  - DNS/REVERSE DNS",
-		"[6]  - OSINT Statistics",
-		"[7]  - View Computer Report",
-		"[8]  - View Scan Results (ip)",
-		"[9]  - View Port Scan Results",
-		"[10] - View Website Report",
+		"[1]  - IP / Port Scanner",
+		"[2]  - OSINT",
+		"[3]  - PC Utilities",
+		"[4]  - Password Cracker",
+		"[5]  - DoS / DDoS",
+		"[6]  - Image Analysis",
+		"[7]  - History Menu",
+		"[8]  - NetHunter",
+		"[9]  - Cookie Grabber",
+		"[10] - Car Information",
 	}
 	col2 := []string{
-		"[11] - Password Cracker",
-		"[12] - DoS",
-		"[13] - Image Analysis",
-		"[14] - View Image History",
-		"[15] - NetHunter",
-		"[16] - Cookie Grabber",
-		"[17] - Car Information",
-		"[18] - Phone Information",
-		"[19] - ZPHISHER",
-		"[20] - Sub Domain Finder",
-	}
-	col3 := []string{
-		"[21] - RAT",
-		"[22] - Ransomware",
-		"[23] - Keylogger",
-		"[24] - Garbage Injector",
-		"[25] - Live Camera Hijack",
-		"[26] - Evil QR",
-		"[27] - View Car History",
-		"[28] - View Phone History",
-		"[29] - Malware Obfuscator",
-		"[30] - Exit",
+		"[11] - Phone Information",
+		"[12] - ZPHISHER",
+		"[13] - RAT",
+		"[14] - Ransomware",
+		"[15] - Keylogger",
+		"[16] - Garbage Injector",
+		"[17] - Live Camera Hijack",
+		"[18] - Evil QR",
+		"[19] - SQL Injector",
+		"[20] - Malware Obfuscator",
 	}
 
-	boxWidth := 30
+	boxWidth := 35
 	boxes := [][]string{
 		utils.MakeBoxLines(col1, boxWidth),
 		utils.MakeBoxLines(col2, boxWidth),
-		utils.MakeBoxLines(col3, boxWidth),
 	}
 
 	blue := [3]int{70, 92, 250}
 	indigo := [3]int{94, 88, 255}
-	violet := [3]int{180, 82, 255}
 
-	totalWidth := (boxWidth + 4) * 3
+	totalWidth := (boxWidth + 4) * 2
 	titlePadding := (totalWidth - len(title)) / 2
 
 	fmt.Printf("\n%s%s%s\n\n", leftPad, utils.RGBText(255, 210, 60, intro), utils.Reset)
 	fmt.Printf("%s%s%s\n\n", leftPad, utils.RGBText(97, 114, 255, strings.Repeat(" ", titlePadding)+title), utils.Reset)
 
 	for i := range boxes[0] {
-		fmt.Printf("%s%s%s%s%s%s%s\n",
+		fmt.Printf("%s%s%s%s%s\n",
 			leftPad,
 			utils.RGBText(blue[0], blue[1], blue[2], boxes[0][i]),
 			gap,
 			utils.RGBText(indigo[0], indigo[1], indigo[2], boxes[1][i]),
-			gap,
-			utils.RGBText(violet[0], violet[1], violet[2], boxes[2][i]),
 			utils.Reset,
 		)
 	}
 
 	fmt.Println()
+}
+
+func ScannerMenu() {
+	reader := bufio.NewReader(os.Stdin)
+
+	for {
+		utils.ClearTerminal()
+		fmt.Printf("\n%s============ SCANNER MENU ============%s\n\n", utils.Blue, utils.Reset)
+
+		fmt.Printf("%s[1]  - IP Scanner%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[2]  - Port Scanner%s\n", utils.Green, utils.Reset)
+		utils.PrintReturnOption("3")
+
+		fmt.Printf("\n%sOption: %s", utils.Green, utils.Reset)
+		input, _ := reader.ReadString('\n')
+		input = strings.TrimSpace(input)
+
+		switch input {
+		case "1":
+			ipscanner.IpScanner()
+		case "2":
+			portscanner.PortScanner()
+		case "3":
+			return
+		default:
+			fmt.Printf("%sInvalid option!%s\n", utils.Yellow, utils.Reset)
+			fmt.Printf("%sPress Enter to continue...%s", utils.Green, utils.Reset)
+			reader.ReadString('\n')
+		}
+	}
+}
+
+func HistoryMenu() {
+	reader := bufio.NewReader(os.Stdin)
+
+	for {
+		utils.ClearTerminal()
+		fmt.Printf("\n%s============ HISTORY MENU ============%s\n\n", utils.Blue, utils.Reset)
+
+		fmt.Printf("%s[1]  - View Computer Report%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[2]  - View Scan Results (IP)%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[3]  - View Port Scan Results%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[4]  - View Website Report%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[5]  - OSINT Statistics%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[6]  - View Image History%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[7]  - View Car History%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[8]  - View Phone History%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[9]  - Phishing History%s\n", utils.Green, utils.Reset)
+		utils.PrintReturnOption("10")
+
+		fmt.Printf("\n%sOption: %s", utils.Green, utils.Reset)
+		input, _ := reader.ReadString('\n')
+		input = strings.TrimSpace(input)
+
+		switch input {
+		case "1":
+			fmt.Printf("%s[*] View Computer Report - Feature coming soon%s\n\n", utils.Yellow, utils.Reset)
+			fmt.Printf("%sPress Enter to continue...%s", utils.Green, utils.Reset)
+			reader.ReadString('\n')
+		case "2":
+			fmt.Printf("%s[*] View Scan Results (IP) - Feature coming soon%s\n\n", utils.Yellow, utils.Reset)
+			fmt.Printf("%sPress Enter to continue...%s", utils.Green, utils.Reset)
+			reader.ReadString('\n')
+		case "3":
+			fmt.Printf("%s[*] View Port Scan Results - Feature coming soon%s\n\n", utils.Yellow, utils.Reset)
+			fmt.Printf("%sPress Enter to continue...%s", utils.Green, utils.Reset)
+			reader.ReadString('\n')
+		case "4":
+			fmt.Printf("%s[*] View Website Report - Feature coming soon%s\n\n", utils.Yellow, utils.Reset)
+			fmt.Printf("%sPress Enter to continue...%s", utils.Green, utils.Reset)
+			reader.ReadString('\n')
+		case "5":
+			fmt.Printf("%s[*] OSINT Statistics - Feature coming soon%s\n\n", utils.Yellow, utils.Reset)
+			fmt.Printf("%sPress Enter to continue...%s", utils.Green, utils.Reset)
+			reader.ReadString('\n')
+		case "6":
+			fmt.Printf("%s[*] View Image History - Feature coming soon%s\n\n", utils.Yellow, utils.Reset)
+			fmt.Printf("%sPress Enter to continue...%s", utils.Green, utils.Reset)
+			reader.ReadString('\n')
+		case "7":
+			fmt.Printf("%s[*] View Car History - Feature coming soon%s\n\n", utils.Yellow, utils.Reset)
+			fmt.Printf("%sPress Enter to continue...%s", utils.Green, utils.Reset)
+			reader.ReadString('\n')
+		case "8":
+			fmt.Printf("%s[*] View Phone History - Feature coming soon%s\n\n", utils.Yellow, utils.Reset)
+			fmt.Printf("%sPress Enter to continue...%s", utils.Green, utils.Reset)
+			reader.ReadString('\n')
+		case "9":
+			fmt.Printf("%s[*] Phishing History - Feature coming soon%s\n\n", utils.Yellow, utils.Reset)
+			fmt.Printf("%sPress Enter to continue...%s", utils.Green, utils.Reset)
+			reader.ReadString('\n')
+		case "10":
+			return
+		default:
+			fmt.Printf("%sInvalid option!%s\n", utils.Yellow, utils.Reset)
+			fmt.Printf("%sPress Enter to continue...%s", utils.Green, utils.Reset)
+			reader.ReadString('\n')
+		}
+	}
 }
 
 func main() {
@@ -100,32 +183,32 @@ func main() {
 		utils.Banner()
 		Menu()
 
-		fmt.Printf("%sChoose a Tool (q to quit): %s", utils.Green, utils.Reset)
+		fmt.Printf("%sChoose a Tool (write 0 to exit): %s", utils.Green, utils.Reset)
 		input, _ := reader.ReadString('\n')
 		input = strings.TrimSpace(input)
 
-		if strings.ToLower(input) == "q" {
+		if input == "0" {
 			fmt.Printf("%sLeaving... Stay Ethical!!%s\n", utils.Yellow, utils.Reset)
 			os.Exit(0)
 		}
 
 		switch input {
 		case "1":
-			ipscanner.IpScanner()
+			ScannerMenu()
 		case "2":
-			portscanner.PortScanner()
-		case "3":
 			osint.OSINTToolkit()
-		case "13":
+		case "6":
 			imganalysis.ImageAnalysis()
-		case "15":
+		case "7":
+			HistoryMenu()
+		case "8":
 			nethunter.NetHunter()
-		case "23":
-			keylogger.LaunchKeylogger()
-		case "24":
-			garbageinjector.GarbageInjector()
-		case "22":
+		case "14":
 			ransomware.LaunchRansomware()
+		case "15":
+			keylogger.LaunchKeylogger()
+		case "16":
+			garbageinjector.GarbageInjector()
 		default:
 			fmt.Printf("%sInvalid option!%s\n", utils.Yellow, utils.Reset)
 			fmt.Printf("\n%sPress Enter to continue...%s", utils.Green, utils.Reset)
