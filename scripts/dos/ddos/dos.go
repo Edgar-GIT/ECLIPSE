@@ -498,6 +498,10 @@ func launchAttack(config AttackConfig, monitor *ResourceMonitor) {
 	time.Sleep(1 * time.Second)
 
 	displayFinalStats(startTime)
+
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Printf("\n%sPress Enter to return to menu...%s", Green, Reset)
+	reader.ReadString('\n')
 }
 
 func httpFloodWorker(config AttackConfig, method string) {
@@ -1066,6 +1070,10 @@ func launchFullPowerAttack(config AttackConfig, monitor *ResourceMonitor) {
 	time.Sleep(1 * time.Second)
 
 	displayFinalStats(startTime)
+
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Printf("\n%sPress Enter to return to menu...%s", Green, Reset)
+	reader.ReadString('\n')
 }
 
 func monitorResourcesWithLimit(monitor *ResourceMonitor) {
