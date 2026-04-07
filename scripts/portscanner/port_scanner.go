@@ -112,7 +112,7 @@ func PortScanner() {
 		fmt.Printf("%s[2] Scan specific IP + specific port%s\n", utils.Green, utils.Reset)
 		fmt.Printf("%s[3] Scan specific IP + all ports (1-65535)%s\n", utils.Green, utils.Reset)
 		fmt.Printf("%s[4] Fast scan (common important ports)%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[5] Return to main menu%s\n", utils.Yellow, utils.Reset)
+		utils.PrintReturnOption("5")
 		fmt.Printf("\n%sOption: %s", utils.Green, utils.Reset)
 
 		option, _ := reader.ReadString('\n')
@@ -211,7 +211,6 @@ func PortScanner() {
 			results := runPortListScan(targetIP, fastScanPorts, true, "fast-scan")
 			savePortResults(results)
 			utils.ClearTerminal()
-			utils.Banner()
 			displayPortResults(&results)
 			utils.WaitForEnter(reader)
 			return

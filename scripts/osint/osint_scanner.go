@@ -84,7 +84,7 @@ func OSINTToolkit() {
 		fmt.Printf("%s[12] SocialEye.net lookup%s\n", utils.Green, utils.Reset)
 		fmt.Printf("%s[13] Maigret web lookup%s\n", utils.Green, utils.Reset)
 		fmt.Printf("%s[14] API Key Manager%s\n", utils.Blue, utils.Reset)
-		fmt.Printf("%s[15] Return to main menu%s\n", utils.Yellow, utils.Reset)
+		utils.PrintReturnOption("15")
 		fmt.Printf("\n%sOption: %s", utils.Green, utils.Reset)
 
 		input, _ := reader.ReadString('\n')

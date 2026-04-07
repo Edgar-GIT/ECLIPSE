@@ -20,7 +20,7 @@ import (
 func Menu() {
 	leftPad := "        "
 	gap := "  "
-	intro := "The only multitool 🛠️  you will ever need - v1.0.0 - https://github.com/Edgar-GIT"
+	intro := "The only multitool 🛠  you will ever need - v1.0.0 - https://github.com/Edgar-GIT"
 	title := "TOOLS"
 
 	col1 := []string{
@@ -54,10 +54,10 @@ func Menu() {
 		"[24] - Garbage Injector",
 		"[25] - Live Camera Hijack",
 		"[26] - Evil QR",
-		"[27] - ",
-		"[28] - ",
-		"[29] - ",
-		"[30] - ",
+		"[27] - View Car History",
+		"[28] - View Phone History",
+		"[29] - Malware Obfuscator",
+		"[30] - Exit",
 	}
 
 	boxWidth := 30

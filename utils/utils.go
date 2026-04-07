@@ -373,3 +373,12 @@ func ExecuteCommand(command string) string {
 
 	return string(output)
 }
+
+// ============================================
+// MENU UTILITIES
+// ============================================
+
+// PrintReturnOption prints a styled "Return to Main Menu" option
+func PrintReturnOption(optionNumber string) {
+	fmt.Printf("%s  [%s] Return to Main Menu%s\n", Yellow, optionNumber, Reset)
+}

@@ -19,7 +19,6 @@ const (
 func GarbageInjector() {
 	for {
 		utils.ClearTerminal()
-		utils.Banner()
 		showGarbageMenu()
 
 		reader := bufio.NewReader(os.Stdin)
@@ -51,12 +50,11 @@ func showGarbageMenu() {
 	fmt.Printf("%s  [1] Inject Garbage into File%s\n", utils.Green, utils.Reset)
 	fmt.Printf("%s  [2] View Output Directory%s\n", utils.Blue, utils.Reset)
 	fmt.Printf("%s  [3] Clean Output Directory%s\n", utils.Yellow, utils.Reset)
-	fmt.Printf("%s  [4] Return to Main Menu%s\n\n", utils.Red, utils.Reset)
+	utils.PrintReturnOption("4")
 }
 
 func injectGarbageToFile() {
 	utils.ClearTerminal()
-	utils.Banner()
 	fmt.Printf("\n%s═══ GARBAGE INJECTION ═══%s\n\n", utils.Purple, utils.Reset)
 
 	reader := bufio.NewReader(os.Stdin)
@@ -259,7 +257,6 @@ func performGarbageInjection(inputPath, outputPath string, targetMB float64) err
 
 func viewOutputDirectory() {
 	utils.ClearTerminal()
-	utils.Banner()
 	fmt.Printf("\n%s═══ OUTPUT DIRECTORY ═══%s\n\n", utils.Blue, utils.Reset)
 
 	if _, err := os.Stat(outputDir); os.IsNotExist(err) {
@@ -313,7 +310,6 @@ func viewOutputDirectory() {
 
 func cleanOutputDirectory() {
 	utils.ClearTerminal()
-	utils.Banner()
 	fmt.Printf("\n%s═══ CLEAN OUTPUT DIRECTORY ═══%s\n\n", utils.Yellow, utils.Reset)
 
 	if _, err := os.Stat(outputDir); os.IsNotExist(err) {

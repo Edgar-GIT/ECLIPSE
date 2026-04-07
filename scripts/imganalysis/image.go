@@ -1,7 +1,6 @@
 package imganalysis
 
 import (
-	"programa/utils"
 	"bufio"
 	"crypto/md5"
 	"crypto/sha1"
@@ -21,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"programa/utils"
 	"regexp"
 	"sort"
 	"strconv"
@@ -111,7 +111,6 @@ type ReverseGeoResult struct {
 
 func ImageAnalysis() {
 	utils.ClearTerminal()
-	utils.Banner()
 
 	fmt.Printf("\n%s╔═══════════════════════════════════════════════════════════════╗%s\n", utils.Purple, utils.Reset)
 	fmt.Printf("%s║                    IMAGE ANALYSIS                             ║%s\n", utils.Purple, utils.Reset)
@@ -162,7 +161,6 @@ func ImageAnalysis() {
 
 func ViewImageAnalysisHistory() {
 	utils.ClearTerminal()
-	utils.Banner()
 	fmt.Printf("\n%s=== IMAGE ANALYSIS HISTORY ===%s\n\n", utils.Blue, utils.Reset)
 
 	history, err := loadImageHistory()
@@ -199,14 +197,13 @@ func ViewImageAnalysisHistory() {
 
 	record := history.Analyses[selected]
 	utils.ClearTerminal()
-	utils.Banner()
 	displayImageHistoryRecord(record)
 
 	fmt.Printf("\n%sOptions:%s\n", utils.Blue, utils.Reset)
 	fmt.Printf("%s[1] Show selected entry as JSON%s\n", utils.Green, utils.Reset)
 	fmt.Printf("%s[2] Show full TXT report%s\n", utils.Green, utils.Reset)
 	fmt.Printf("%s[3] Delete image history JSON%s\n", utils.Red, utils.Reset)
-	fmt.Printf("%s[4] Return to menu%s\n", utils.Yellow, utils.Reset)
+	utils.PrintReturnOption("4")
 	fmt.Printf("\n%sChoose option: %s", utils.Green, utils.Reset)
 
 	input, _ := reader.ReadString('\n')

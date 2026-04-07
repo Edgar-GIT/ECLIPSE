@@ -1,7 +1,6 @@
 package nethunter
 
 import (
-	"programa/utils"
 	"bufio"
 	"context"
 	"errors"
@@ -13,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"programa/utils"
 	"runtime"
 	"sort"
 	"strings"
@@ -68,7 +68,6 @@ func NetHunter() {
 
 	for {
 		utils.ClearTerminal()
-		utils.Banner()
 		showNetHunterMenu()
 
 		reader := bufio.NewReader(os.Stdin)
@@ -97,7 +96,7 @@ func showNetHunterMenu() {
 
 	fmt.Printf("%s  [1] Create Fake LAN%s\n", utils.Green, utils.Reset)
 	fmt.Printf("%s  [2] Launch Evil Twin%s\n", utils.Red, utils.Reset)
-	fmt.Printf("%s  [3] Return to Main Menu%s\n\n", utils.Yellow, utils.Reset)
+	utils.PrintReturnOption("3")
 }
 
 func checkRequirements() bool {
@@ -244,7 +243,6 @@ func runInteractiveCommand(name string, args ...string) error {
 
 func createFakeLAN() {
 	utils.ClearTerminal()
-	utils.Banner()
 	fmt.Printf("\n%s═══ CREATE FAKE LAN ═══%s\n\n", utils.Green, utils.Reset)
 
 	reader := bufio.NewReader(os.Stdin)
@@ -345,7 +343,6 @@ func createFakeLAN() {
 
 func launchEvilTwin() {
 	utils.ClearTerminal()
-	utils.Banner()
 	fmt.Printf("\n%s═══ LAUNCH EVIL TWIN ═══%s\n\n", utils.Red, utils.Reset)
 
 	fmt.Printf("%s[*] Scanning for nearby networks...%s\n", utils.Yellow, utils.Reset)
@@ -1491,7 +1488,6 @@ func displayDashboard(isEvilTwin bool) {
 
 	for {
 		utils.ClearTerminal()
-		utils.Banner()
 
 		if isEvilTwin {
 			fmt.Printf("\n%s═══ EVIL TWIN DASHBOARD ═══%s\n\n", utils.Red, utils.Reset)
@@ -1625,7 +1621,6 @@ type clientChoice struct {
 
 func kickClient() {
 	utils.ClearTerminal()
-	utils.Banner()
 	fmt.Printf("\n%s═══ KICK CLIENT ═══%s\n\n", utils.Yellow, utils.Reset)
 
 	if runtime.GOOS == "windows" {
@@ -1663,7 +1658,6 @@ func kickClient() {
 
 func blockWebsites() {
 	utils.ClearTerminal()
-	utils.Banner()
 	fmt.Printf("\n%s═══ BLOCK WEBSITES ═══%s\n\n", utils.Yellow, utils.Reset)
 
 	reader := bufio.NewReader(os.Stdin)
@@ -1703,7 +1697,6 @@ func blockWebsites() {
 
 func configureDNSSpoof() {
 	utils.ClearTerminal()
-	utils.Banner()
 	fmt.Printf("\n%s═══ DNS SPOOFING ═══%s\n\n", utils.Yellow, utils.Reset)
 
 	reader := bufio.NewReader(os.Stdin)
@@ -1750,7 +1743,6 @@ func configureDNSSpoof() {
 
 func injectJavaScript() {
 	utils.ClearTerminal()
-	utils.Banner()
 	fmt.Printf("\n%s═══ INJECT JAVASCRIPT ═══%s\n\n", utils.Yellow, utils.Reset)
 
 	fmt.Printf("%sExamples:%s\n", utils.Blue, utils.Reset)
@@ -1795,7 +1787,6 @@ func injectJavaScript() {
 
 func viewRules() {
 	utils.ClearTerminal()
-	utils.Banner()
 	fmt.Printf("\n%s═══ CURRENT RULES ═══%s\n\n", utils.Blue, utils.Reset)
 
 	rulesMutex.RLock()
@@ -1967,7 +1958,6 @@ type dnsRuleEntry struct {
 
 func removeRulesMenu() {
 	utils.ClearTerminal()
-	utils.Banner()
 	fmt.Printf("\n%s═══ REMOVE RULES ═══%s\n\n", utils.Yellow, utils.Reset)
 	fmt.Printf("%s[1] Remove blocked website rule%s\n", utils.Green, utils.Reset)
 	fmt.Printf("%s[2] Remove DNS spoof rule%s\n", utils.Green, utils.Reset)
@@ -2002,7 +1992,6 @@ func removeRulesMenu() {
 
 func removeBlockedRule() {
 	utils.ClearTerminal()
-	utils.Banner()
 	fmt.Printf("\n%s═══ REMOVE BLOCKED RULE ═══%s\n\n", utils.Yellow, utils.Reset)
 
 	reader := bufio.NewReader(os.Stdin)
@@ -2115,7 +2104,6 @@ func removeBlockedRule() {
 
 func removeDNSSpoofRule() {
 	utils.ClearTerminal()
-	utils.Banner()
 	fmt.Printf("\n%s═══ REMOVE DNS SPOOF RULE ═══%s\n\n", utils.Yellow, utils.Reset)
 
 	reader := bufio.NewReader(os.Stdin)
@@ -2226,7 +2214,6 @@ func removeDNSSpoofRule() {
 
 func removeJavaScriptRule() {
 	utils.ClearTerminal()
-	utils.Banner()
 	fmt.Printf("\n%s═══ REMOVE JAVASCRIPT RULE ═══%s\n\n", utils.Yellow, utils.Reset)
 
 	reader := bufio.NewReader(os.Stdin)
@@ -2320,7 +2307,6 @@ func removeJavaScriptRule() {
 
 func removeAllGlobalRules() {
 	utils.ClearTerminal()
-	utils.Banner()
 	fmt.Printf("\n%s═══ REMOVE ALL GLOBAL RULES ═══%s\n\n", utils.Yellow, utils.Reset)
 
 	rulesMutex.RLock()
@@ -2362,7 +2348,6 @@ func removeAllGlobalRules() {
 
 func removeAllClientRules() {
 	utils.ClearTerminal()
-	utils.Banner()
 	fmt.Printf("\n%s═══ REMOVE ALL CLIENT RULES ═══%s\n\n", utils.Yellow, utils.Reset)
 
 	rulesMutex.RLock()

@@ -634,7 +634,7 @@ func ViewScanResults() {
 	fmt.Printf("\n%sOptions:%s\n", utils.Blue, utils.Reset)
 	fmt.Printf("%s[1] Refresh this scan (re-scan same IPs)%s\n", utils.Green, utils.Reset)
 	fmt.Printf("%s[2] Delete all results%s\n", utils.Red, utils.Reset)
-	fmt.Printf("%s[3] Return to menu%s\n", utils.Yellow, utils.Reset)
+	utils.PrintReturnOption("3")
 	fmt.Printf("\n%sChoose option: %s", utils.Green, utils.Reset)
 
 	input, _ := reader.ReadString('\n')

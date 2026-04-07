@@ -15,7 +15,6 @@ import (
 func LaunchKeylogger() {
 	for {
 		utils.ClearTerminal()
-		utils.Banner()
 		showKeyloggerMenu()
 
 		reader := bufio.NewReader(os.Stdin)
@@ -41,12 +40,11 @@ func showKeyloggerMenu() {
 	fmt.Printf("%s╚═══════════════════════════════════════════════════════════════╝%s\n\n", utils.Purple, utils.Reset)
 
 	fmt.Printf("%s  [1] Build Keylogger%s\n", utils.Red, utils.Reset)
-	fmt.Printf("%s  [2] Return to Main Menu%s\n\n", utils.Yellow, utils.Reset)
+	utils.PrintReturnOption("2")
 }
 
 func buildKeylogger() {
 	utils.ClearTerminal()
-	utils.Banner()
 	fmt.Printf("\n%s═══ BUILD KEYLOGGER ═══%s\n\n", utils.Red, utils.Reset)
 
 	reader := bufio.NewReader(os.Stdin)

