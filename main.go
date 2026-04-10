@@ -12,6 +12,7 @@ import (
 	"programa/scripts/imganalysis"
 	"programa/scripts/ipscanner"
 	"programa/scripts/keylogger"
+	"programa/scripts/malware_obfuscator"
 	"programa/scripts/nethunter"
 	"programa/scripts/osint"
 	"programa/scripts/portscanner"
@@ -215,6 +216,8 @@ func main() {
 			keylogger.LaunchKeylogger()
 		case "16":
 			garbageinjector.GarbageInjector()
+		case "20":
+			malware_obfuscator.MalwareObfuscatorMenu()
 		default:
 			fmt.Printf("%sInvalid option!%s\n", utils.Yellow, utils.Reset)
 			fmt.Printf("\n%sPress Enter to continue...%s", utils.Green, utils.Reset)
