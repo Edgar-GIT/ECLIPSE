@@ -1,7 +1,6 @@
 package osint
 
 import (
-	"programa/utils"
 	"bufio"
 	"bytes"
 	"encoding/csv"
@@ -14,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"programa/utils"
 	"regexp"
 	"runtime"
 	"sort"
@@ -308,7 +308,7 @@ func runSubdomainEnum(target string) {
 }
 
 func runMaigretLookup(reader *bufio.Reader, target string) {
-	args := []string{target, "--html"}
+	args := []string{target, "-a", "--html"}
 
 	if isToolInstalled("maigret") {
 		runOSINTCommand("maigret", target, "maigret", args)
