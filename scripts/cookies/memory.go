@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"runtime"
+	"strconv"
 	"strings"
 	"unsafe"
 
@@ -337,14 +338,14 @@ func (pe *ProcessMemoryExtractor) ReadCookieFromMemory(addr uintptr) (*BrowserCo
 		secure := buffer[4900]
 		httpOnly := buffer[4901]
 		cookie.Secure = secure != 0
-		cookie.HTTPOnly = httpOnly != 0
+		cookie.HttpOnly = httpOnly != 0
 	}
 
 	// Parse timestamps (int64 values around offset ~4912+)
 	if len(buffer) > 4928 {
 		expiryTs := binary.LittleEndian.Uint64(buffer[4912:4920])
 		if expiryTs > 0 {
-			cookie.Expires = int64(expiryTs)
+			cookie.Expires = strconv.FormatInt(int64(expiryTs), 10)
 		}
 	}
 
