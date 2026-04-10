@@ -47,7 +47,7 @@ func Menu() {
 		"[16] - Garbage Injector",
 		"[17] - Live Camera Hijack",
 		"[18] - Evil QR",
-		"[19] - Spammer",
+		"[19] - Web Inspection",
 		"[20] - Malware Obfuscator",
 	}
 
