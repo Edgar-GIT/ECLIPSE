@@ -41,7 +41,7 @@ func extractChromeKeyWindowsFromDisk(localStatePath string) ([]byte, error) {
 	return decryptData(encryptedKey)
 }
 
-func extractChromeKeyLinux(cookiesPath string) ([]byte, error) {
+func extractChromeKeyLinux() ([]byte, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, err

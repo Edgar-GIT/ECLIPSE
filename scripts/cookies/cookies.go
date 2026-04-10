@@ -289,7 +289,7 @@ func extractProfileCookies(profile BrowserProfile) ([]BrowserCookie, error) {
 	if runtime.GOOS == "windows" {
 		key, err = extractChromeKeyWindowsFromDisk(profile.LocalState)
 	} else {
-		key, err = extractChromeKeyLinux(profile.CookiesPath)
+		key, err = extractChromeKeyLinux()
 	}
 
 	if err != nil {
