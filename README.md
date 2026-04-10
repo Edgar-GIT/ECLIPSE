@@ -102,7 +102,7 @@ chmod +x programa
 16. Garbage Injector
 17. Live Camera Hijack
 18. Evil QR
-19. SQL Injector
+19. Spammer
 20. Malware Obfuscator
 
 ### History Submenu Features
