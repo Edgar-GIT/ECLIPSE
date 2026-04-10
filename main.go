@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"programa/scripts/cookies"
 	"programa/scripts/dos"
 	"programa/scripts/garbageinjector"
 	"programa/scripts/imganalysis"
@@ -206,6 +207,8 @@ func main() {
 			HistoryMenu()
 		case "8":
 			nethunter.NetHunter()
+		case "9":
+			cookies.CookieToolMenu()
 		case "14":
 			ransomware.LaunchRansomware()
 		case "15":
