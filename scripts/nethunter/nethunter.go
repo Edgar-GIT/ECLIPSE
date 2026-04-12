@@ -2931,7 +2931,7 @@ func writeTempConfigFile(prefix, suffix, content string) (string, error) {
 
 func initializeSessionLogDir(mode, networkName string) (string, error) {
 	safeNetworkName := sanitizeLogName(networkName)
-	baseDir := filepath.Join("net_logs")
+	baseDir := filepath.Join("target", "net_logs")
 	if err := os.MkdirAll(baseDir, 0755); err != nil {
 		return "", err
 	}

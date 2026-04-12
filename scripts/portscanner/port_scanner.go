@@ -41,7 +41,7 @@ type PortScanResults struct {
 	EndPort   int    `json:"end_port,omitempty"`
 }
 
-const portResultsFile = "port_scan_results.json"
+const portResultsFile = "target/port_scan_results.json"
 
 var commonPortServices = map[int]string{
 	20:    "FTP-Data",

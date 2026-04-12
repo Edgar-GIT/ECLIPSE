@@ -60,7 +60,7 @@ type ScanHistory struct {
 	Scans []ScanResults `json:"scans"`
 }
 
-const resultsFile = "ip_scan_results.json"
+const resultsFile = "target/ip_scan_results.json"
 
 func isValidIPv4(ip string) bool {
 	parsed := net.ParseIP(strings.TrimSpace(ip))

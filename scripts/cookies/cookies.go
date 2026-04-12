@@ -452,7 +452,7 @@ func buildCollectorExecutable() {
 	outputDir, _ := reader.ReadString('\n')
 	outputDir = strings.TrimSpace(outputDir)
 	if outputDir == "" {
-		outputDir = "."
+		outputDir = "target"
 	}
 
 	fmt.Printf("%sIcon path (optional): %s", utils.Green, utils.Reset)

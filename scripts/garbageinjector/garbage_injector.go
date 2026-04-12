@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	outputDir = "./Garbage_Output"
+	outputDir = "./target/garbage_output"
 )
 
 func GarbageInjector() {

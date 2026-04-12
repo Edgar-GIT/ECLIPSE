@@ -50,10 +50,10 @@ type OSINTStats struct {
 }
 
 const (
-	osintResultsFile = "osint_results.json"
-	osintReportsDir  = "osint_reports"
-	osintAPIKeysFile = "osint_api_keys.json"
-	osintToolsDir    = "osint_tools"
+	osintResultsFile = "target/osint_results.json"
+	osintReportsDir  = "target/osint_reports"
+	osintAPIKeysFile = "target/osint_api_keys.json"
+	osintToolsDir    = "target/osint_tools"
 )
 
 var apiKeyHelpLinks = map[string]string{

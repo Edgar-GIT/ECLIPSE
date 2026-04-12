@@ -179,6 +179,10 @@ func HistoryMenu() {
 }
 
 func main() {
+	if err := os.MkdirAll("target", 0755); err != nil {
+		fmt.Printf("%s[!] Failed to create target directory: %v%s\n", utils.Red, err, utils.Reset)
+	}
+
 	reader := bufio.NewReader(os.Stdin)
 
 	for {
