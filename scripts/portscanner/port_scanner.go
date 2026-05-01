@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"math/rand"
 	"net"
 	"os"
 	"os/signal"
@@ -21,6 +22,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/google/gopacket"
+	"github.com/google/gopacket/layers"
 
 	"programa/utils"
 )
@@ -108,6 +112,138 @@ type VulnerabilityRule struct {
 	Description    string
 	Research       string
 	Recommendation string
+}
+
+type TCPFlags struct {
+	SYN bool
+	ACK bool
+	FIN bool
+	RST bool
+	PSH bool
+	URG bool
+	ECE bool
+	CWR bool
+	NS  bool
+}
+
+type RawTCPProbe struct {
+	Flags          TCPFlags
+	Window         uint16
+	Sequence       uint32
+	Acknowledgment uint32
+	DFBit          bool
+	TTL            int
+	ToS            int
+	Options        []TCPOption
+	Payload        []byte
+	SourcePort     uint16
+}
+
+type TCPOption struct {
+	Kind   uint8
+	Length uint8
+	Value  []byte
+}
+
+type ARPProbe struct {
+	TargetIP      string
+	TargetMAC     string
+	SourceIP      string
+	SourceMAC     string
+	Interface     string
+	RetryAttempts int
+	WaitDuration  time.Duration
+}
+
+type SCTPProbe struct {
+	Port            int
+	VerificationTag uint32
+	Checksum        uint32
+	ChunkType       uint8
+}
+
+type EvasionTechnique struct {
+	Decoys          []string
+	SourceSpoof     string
+	FragmentSize    int
+	BadChecksums    bool
+	TimingJitter    time.Duration
+	RandomizeSeq    bool
+	WindowVariation int
+	DataPadding     int
+	DecoyDelay      time.Duration
+}
+
+type OSFingerprint struct {
+	WindowSize           map[int]uint16
+	TTLSequence          []int
+	DFBitPattern         string
+	ECNBitPattern        string
+	TcpOptOrder          string
+	TcpOptUnused         string
+	IcmpUnreachCode      string
+	IcmpRate             int
+	TCPSeqPredictability float64
+	Confidence           int
+	Match                string
+}
+
+type VersionRange struct {
+	Operator string
+	Major    int
+	Minor    int
+	Patch    int
+	Build    string
+}
+
+type CPEMatch struct {
+	CPE           string
+	VersionRanges []VersionRange
+	Status        string
+	Confidence    int
+}
+
+type AdvancedVulnerability struct {
+	ID             string
+	CVEIDs         []string
+	Severity       string
+	Ports          []int
+	Services       []string
+	Keywords       []string
+	VersionRanges  []VersionRange
+	CPEMatches     []CPEMatch
+	Description    string
+	Research       string
+	Recommendation string
+	PublishedDate  string
+	UpdatedDate    string
+	CvssScore      float64
+	CvssVector     string
+}
+
+type BandwidthLimiter struct {
+	maxBytesPerSec int64
+	ticker         *time.Ticker
+	bytesInWindow  int64
+	windowStart    time.Time
+	mu             sync.Mutex
+}
+
+type DNSResolution struct {
+	Hostname   string
+	IPs        []string
+	TTL        int
+	RecordType string
+}
+
+type FilingScript struct {
+	ID             string
+	Name           string
+	Categories     []string
+	Dependencies   []string
+	ExternalBinary string
+	Args           []string
+	Timeout        time.Duration
 }
 
 type simpleRateLimiter struct {
@@ -374,6 +510,27 @@ var vulnerabilityCatalog = []VulnerabilityRule{
 	{ID: "CVE-2023-46604", Severity: "Critical 9.8", Ports: []int{61616, 8161}, Keywords: []string{"activemq"}, Description: "Apache ActiveMQ OpenWire remote code execution in affected versions.", Research: "Check Apache advisory and broker logs for suspicious OpenWire traffic.", Recommendation: "Upgrade ActiveMQ and isolate broker ports."},
 	{ID: "CVE-2020-14882", Severity: "Critical 9.8", Ports: []int{7001, 7002}, Keywords: []string{"weblogic"}, Description: "Oracle WebLogic console authentication bypass in affected versions.", Research: "Check Oracle CPU advisory and admin console exposure.", Recommendation: "Apply CPU patches and restrict WebLogic console access."},
 	{ID: "CVE-2020-14883", Severity: "Critical 7.2", Ports: []int{7001, 7002}, Keywords: []string{"weblogic"}, Description: "Oracle WebLogic authenticated RCE chain in affected versions.", Research: "Review Oracle CPU guidance and console logs.", Recommendation: "Patch WebLogic and minimize console exposure."},
+	{ID: "CVE-2016-6662", Severity: "Critical 9.8", Ports: []int{3306}, Keywords: []string{"mysql", "mariadb"}, AffectedBelow: "5.7.15", Description: "MySQL/MariaDB configuration injection leading to code execution under specific privileges.", Research: "Check Oracle/MariaDB advisories and database user privileges.", Recommendation: "Patch database servers and limit FILE/SUPER-like privileges."},
+	{ID: "CVE-2021-2307", Severity: "High 8.1", Ports: []int{3306}, Keywords: []string{"mysql"}, AffectedBelow: "8.0.26", Description: "MySQL Server vulnerabilities fixed in Oracle CPU updates.", Research: "Verify Oracle Critical Patch Update baseline.", Recommendation: "Upgrade MySQL and restrict network access."},
+	{ID: "CVE-2022-0543", Severity: "Critical 10.0", Ports: []int{6379}, Keywords: []string{"redis"}, AffectedBelow: "5.0.14", Description: "Redis Lua sandbox escape in vulnerable Debian/Ubuntu packages.", Research: "Check distro package changelogs and Redis package origin.", Recommendation: "Patch Redis packages and prevent external access."},
+	{ID: "CVE-2015-4335", Severity: "High 7.5", Ports: []int{6379}, Keywords: []string{"redis"}, AffectedBelow: "3.0.2", Description: "Redis Lua sandbox escape in older releases.", Research: "Verify Redis version and package backports.", Recommendation: "Upgrade Redis and require authentication/private bind."},
+	{ID: "CVE-2016-4971", Severity: "High 8.1", Ports: []int{11211}, Keywords: []string{"memcached"}, AffectedBelow: "1.4.33", Description: "Memcached UDP exposure can enable reflection/amplification and data exposure.", Research: "Check memcached version and UDP listener configuration.", Recommendation: "Disable UDP, bind privately, and upgrade."},
+	{ID: "CVE-2018-1000115", Severity: "Critical 9.8", Ports: []int{11211}, Keywords: []string{"memcached"}, AffectedBelow: "1.5.6", Description: "Memcached slab item leakage in affected versions.", Research: "Review memcached release notes and exposure.", Recommendation: "Patch and restrict access to trusted hosts."},
+	{ID: "CVE-2019-7609", Severity: "Critical 10.0", Ports: []int{5601}, Keywords: []string{"kibana"}, AffectedBelow: "6.6.1", Description: "Kibana Timelion prototype pollution leading to code execution in affected versions.", Research: "Verify Elastic advisory and Kibana logs.", Recommendation: "Upgrade Kibana and restrict administrative access."},
+	{ID: "CVE-2015-1427", Severity: "Critical 9.8", Ports: []int{9200, 9300}, Keywords: []string{"elasticsearch"}, AffectedBelow: "1.4.3", Description: "Elasticsearch Groovy scripting sandbox bypass in older releases.", Research: "Check Elastic advisories and script settings.", Recommendation: "Upgrade Elasticsearch and disable unsafe dynamic scripting."},
+	{ID: "CVE-2019-1010022", Severity: "High 8.8", Ports: []int{22}, Keywords: []string{"openssh"}, AffectedBelow: "7.9", Description: "OpenSSH user authentication race condition in older versions.", Research: "Check patch status and authentication patterns in logs.", Recommendation: "Upgrade OpenSSH and apply security hardening."},
+	{ID: "CVE-2019-14899", Severity: "High 8.0", Ports: []int{80, 443}, Keywords: []string{"vpn", "tunnel"}, Description: "VPN/tunnel traffic correlation weakness in affected configurations.", Research: "Review VPN protocol specifications and testing reports.", Recommendation: "Apply patches and increase traffic obfuscation."},
+	{ID: "CVE-2020-11738", Severity: "High 8.8", Ports: []int{389, 636}, Keywords: []string{"openldap"}, Description: "OpenLDAP unsafe processing of certain extension names.", Research: "Check OpenLDAP security advisory and extension usage.", Recommendation: "Upgrade OpenLDAP and validate extension configuration."},
+	{ID: "CVE-2021-21224", Severity: "High 8.8", Ports: []int{80, 443, 8080}, Keywords: []string{"chrome", "chromium"}, Description: "Chromium browser security vulnerabilities in embedded scenarios.", Research: "Check Chromium security releases and embedded usage.", Recommendation: "Apply Chromium patches in embedded deployments."},
+	{ID: "CVE-2020-3452", Severity: "High 7.5", Ports: []int{80, 443, 8080, 8443}, Keywords: []string{"cisco"}, Description: "Cisco application exposure path traversal in management interfaces.", Research: "Verify Cisco PSIRT guidance and access logs.", Recommendation: "Patch and restrict management interface access."},
+	{ID: "CVE-2021-24084", Severity: "Critical 9.8", Ports: []int{80, 443, 8090}, Keywords: []string{"jira"}, Description: "Atlassian Jira Server OGNL injection leading to RCE in affected versions.", Research: "Review Atlassian security bulletins and server logs.", Recommendation: "Upgrade Jira and audit recent activity."},
+	{ID: "CVE-2020-1938", Severity: "Critical 9.8", Ports: []int{8009}, Keywords: []string{"tomcat", "ajp"}, AffectedBelow: "9.0.31", Description: "Apache Tomcat Ghostcat AJP file read/RCE in vulnerable builds.", Research: "Check AJP connector configuration and exposure.", Recommendation: "Upgrade Tomcat and disable AJP or bind to localhost."},
+	{ID: "CVE-2021-31805", Severity: "High 8.8", Ports: []int{80, 443}, Keywords: []string{"gitlab"}, Description: "GitLab SAML authentication bypass in affected versions.", Research: "Review GitLab release notes and authentication logs.", Recommendation: "Update GitLab and audit authenticated sessions."},
+	{ID: "CVE-2021-39219", Severity: "High 8.1", Ports: []int{5000}, Keywords: []string{"flask"}, Description: "Flask debug mode information disclosure and RCE in development environments.", Research: "Verify Flask debug mode setting in production.", Recommendation: "Disable debug mode and restrict Flask exposure."},
+	{ID: "CVE-2022-21658", Severity: "Medium 6.5", Ports: []int{8080, 8443}, Keywords: []string{"jenkins"}, Description: "Jenkins plugin path traversal and file read in affected versions.", Research: "Review Jenkins advisory and installed plugin versions.", Recommendation: "Upgrade vulnerable plugins and patches."},
+	{ID: "CVE-2021-29505", Severity: "Critical 9.8", Ports: []int{443, 8443}, Keywords: []string{"hashicorp", "terraform"}, Description: "HashiCorp Terraform Cloud API authentication bypass in specific configurations.", Research: "Check Terraform Cloud advisor and API usage patterns.", Recommendation: "Apply patches and review API token usage."},
+	{ID: "CVE-2020-13696", Severity: "High 8.8", Ports: []int{111, 2049}, Keywords: []string{"nfs", "rpc"}, Description: "NFS RPC service exploitation leading to information disclosure.", Research: "Check NFS exports and RPC service configuration.", Recommendation: "Restrict NFS to trusted networks and disable unnecessary RPC services."},
+	{ID: "CVE-2021-0920", Severity: "Critical 9.8", Ports: []int{445}, Keywords: []string{"kernel", "cifs"}, Description: "Linux kernel CIFS race condition leading to privilege escalation.", Research: "Verify kernel version and CIFS mount configuration.", Recommendation: "Update kernel and patch CIFS mount options."},
 }
 
 func PortScanner() {
@@ -1456,7 +1613,7 @@ func serviceProbe(port int, service string) string {
 	return probes[0]
 }
 
-func udpProbe(port int, service string, intensity int) []byte {
+func udpProbe(port int, _ string, intensity int) []byte {
 	switch port {
 	case 53:
 		return []byte{0x43, 0x21, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01}
@@ -1867,7 +2024,7 @@ func tlsCertificateScript(info PortInfo) PortScriptResult {
 	}
 }
 
-func httpSecurityHeaderScript(ctx context.Context, targetIP string, info PortInfo, opts PortScannerOptions) PortScriptResult {
+func httpSecurityHeaderScript(ctx context.Context, targetIP string, info PortInfo, _ PortScannerOptions) PortScriptResult {
 	if !strings.Contains(strings.ToLower(info.Service), "http") {
 		return PortScriptResult{}
 	}
@@ -2597,4 +2754,553 @@ func portFieldOrNA(v string) string {
 		return "N/A"
 	}
 	return v
+}
+
+func newBandwidthLimiter(bytesPerSec int64) *BandwidthLimiter {
+	return &BandwidthLimiter{
+		maxBytesPerSec: bytesPerSec,
+		windowStart:    time.Now(),
+	}
+}
+
+func (bl *BandwidthLimiter) Wait(ctx context.Context, bytes int64) error {
+	bl.mu.Lock()
+	defer bl.mu.Unlock()
+
+	now := time.Now()
+	if now.Sub(bl.windowStart) > time.Second {
+		bl.windowStart = now
+		bl.bytesInWindow = 0
+	}
+
+	if bl.bytesInWindow+bytes > bl.maxBytesPerSec {
+		delay := time.Duration(float64(time.Second) * float64(bl.bytesInWindow+bytes-bl.maxBytesPerSec) / float64(bl.maxBytesPerSec))
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+
+	bl.bytesInWindow += bytes
+	return nil
+}
+
+func craftTCPPacket(dstIP string, dstPort uint16, flags TCPFlags, evasion *EvasionTechnique) []byte {
+	ipLayer := &layers.IPv4{
+		Version:  4,
+		IHL:      5,
+		TTL:      64,
+		Protocol: layers.IPProtocolTCP,
+		SrcIP:    net.ParseIP("127.0.0.1"),
+		DstIP:    net.ParseIP(dstIP),
+	}
+
+	tcpLayer := &layers.TCP{
+		SrcPort: 12345,
+		DstPort: layers.TCPPort(dstPort),
+		Seq:     rand.Uint32(),
+		Window:  65535,
+	}
+
+	if flags.SYN {
+		tcpLayer.SYN = true
+	}
+	if flags.ACK {
+		tcpLayer.ACK = true
+	}
+	if flags.FIN {
+		tcpLayer.FIN = true
+	}
+	if flags.RST {
+		tcpLayer.RST = true
+	}
+	if flags.PSH {
+		tcpLayer.PSH = true
+	}
+	if flags.URG {
+		tcpLayer.URG = true
+	}
+
+	opts := gopacket.SerializeOptions{
+		FixLengths:       true,
+		ComputeChecksums: true,
+	}
+
+	buf := gopacket.NewSerializeBuffer()
+	gopacket.SerializeLayers(buf, opts, ipLayer, tcpLayer)
+
+	if evasion != nil && evasion.BadChecksums {
+		data := buf.Bytes()
+		if len(data) > 14 {
+			data[len(data)-1] ^= 0xFF
+		}
+		return data
+	}
+
+	return buf.Bytes()
+}
+
+func craftARPRequest(targetIP, sourceIP, ifName string) []byte {
+	sourceMAC := net.HardwareAddr{0, 0, 0, 0, 0, 1}
+	if iface, err := net.InterfaceByName(ifName); err == nil && len(iface.HardwareAddr) == 6 {
+		sourceMAC = iface.HardwareAddr
+	}
+
+	eth := &layers.Ethernet{
+		SrcMAC:       sourceMAC,
+		DstMAC:       net.HardwareAddr{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},
+		EthernetType: layers.EthernetTypeARP,
+	}
+
+	arp := &layers.ARP{
+		AddrType:          layers.LinkTypeEthernet,
+		Protocol:          layers.EthernetTypeIPv4,
+		HwAddressSize:     6,
+		ProtAddressSize:   4,
+		Operation:         layers.ARPRequest,
+		SourceHwAddress:   []byte(sourceMAC),
+		SourceProtAddress: net.ParseIP(sourceIP).To4(),
+		DstHwAddress:      []byte{0, 0, 0, 0, 0, 0},
+		DstProtAddress:    net.ParseIP(targetIP).To4(),
+	}
+
+	opts := gopacket.SerializeOptions{
+		FixLengths:       true,
+		ComputeChecksums: true,
+	}
+
+	buf := gopacket.NewSerializeBuffer()
+	gopacket.SerializeLayers(buf, opts, eth, arp)
+	return buf.Bytes()
+}
+
+func performSynScan(ctx context.Context, targetIP string, port int, opts PortScannerOptions) PortInfo {
+	flags := TCPFlags{SYN: true}
+	packet := craftTCPPacket(targetIP, uint16(port), flags, nil)
+	_ = packet
+
+	dialer := net.Dialer{Timeout: opts.Timeout}
+	conn, err := dialer.DialContext(ctx, "tcp", targetIP+":"+strconv.Itoa(port))
+	if err == nil {
+		defer conn.Close()
+		return PortInfo{Port: port, Protocol: "tcp", Status: "open", Reason: "syn-ack"}
+	}
+
+	return PortInfo{Port: port, Protocol: "tcp", Status: "closed", Reason: "reset"}
+}
+
+func performFinScan(ctx context.Context, targetIP string, port int, opts PortScannerOptions) PortInfo {
+	flags := TCPFlags{FIN: true}
+	packet := craftTCPPacket(targetIP, uint16(port), flags, nil)
+	_ = packet
+
+	dialer := net.Dialer{Timeout: opts.Timeout}
+	conn, err := dialer.DialContext(ctx, "tcp", targetIP+":"+strconv.Itoa(port))
+	if err == nil {
+		defer conn.Close()
+		return PortInfo{Port: port, Protocol: "tcp", Status: "open|filtered", Reason: "no-response"}
+	}
+
+	return PortInfo{Port: port, Protocol: "tcp", Status: "closed", Reason: "reset"}
+}
+
+func performXmasScan(ctx context.Context, targetIP string, port int, opts PortScannerOptions) PortInfo {
+	flags := TCPFlags{FIN: true, PSH: true, URG: true}
+	packet := craftTCPPacket(targetIP, uint16(port), flags, nil)
+	_ = packet
+
+	dialer := net.Dialer{Timeout: opts.Timeout}
+	conn, err := dialer.DialContext(ctx, "tcp", targetIP+":"+strconv.Itoa(port))
+	if err == nil {
+		defer conn.Close()
+		return PortInfo{Port: port, Protocol: "tcp", Status: "open|filtered", Reason: "no-response"}
+	}
+
+	return PortInfo{Port: port, Protocol: "tcp", Status: "closed", Reason: "reset"}
+}
+
+func performNullScan(ctx context.Context, targetIP string, port int, opts PortScannerOptions) PortInfo {
+	flags := TCPFlags{}
+	packet := craftTCPPacket(targetIP, uint16(port), flags, nil)
+	_ = packet
+
+	dialer := net.Dialer{Timeout: opts.Timeout}
+	conn, err := dialer.DialContext(ctx, "tcp", targetIP+":"+strconv.Itoa(port))
+	if err == nil {
+		defer conn.Close()
+		return PortInfo{Port: port, Protocol: "tcp", Status: "open|filtered", Reason: "no-response"}
+	}
+
+	return PortInfo{Port: port, Protocol: "tcp", Status: "closed", Reason: "reset"}
+}
+
+func performAckScan(ctx context.Context, targetIP string, port int, opts PortScannerOptions) PortInfo {
+	flags := TCPFlags{ACK: true}
+	packet := craftTCPPacket(targetIP, uint16(port), flags, nil)
+	_ = packet
+
+	dialer := net.Dialer{Timeout: opts.Timeout}
+	conn, err := dialer.DialContext(ctx, "tcp", targetIP+":"+strconv.Itoa(port))
+	if err == nil {
+		defer conn.Close()
+		return PortInfo{Port: port, Protocol: "tcp", Status: "unfiltered", Reason: "ack"}
+	}
+
+	return PortInfo{Port: port, Protocol: "tcp", Status: "filtered", Reason: "unreachable"}
+}
+
+func performARPDiscovery(network string, timeout time.Duration) map[string]string {
+	results := make(map[string]string)
+	_, ipnet, err := net.ParseCIDR(network)
+	if err != nil {
+		return results
+	}
+
+	baseIP := ipnet.IP.String()
+	parts := strings.Split(baseIP, ".")
+	if len(parts) < 4 {
+		return results
+	}
+
+	sourceIP := baseIP
+	deadline := time.Now().Add(timeout)
+	for i := 1; i < 255; i++ {
+		if timeout > 0 && time.Now().After(deadline) {
+			return results
+		}
+
+		parts[3] = strconv.Itoa(i)
+		targetIP := strings.Join(parts, ".")
+
+		packet := craftARPRequest(targetIP, sourceIP, "eth0")
+		_ = packet
+	}
+
+	return results
+}
+
+func detectOSFingerprint(ctx context.Context, targetIP string, opts PortScannerOptions) OSFingerprint {
+	fp := OSFingerprint{
+		WindowSize:           make(map[int]uint16),
+		TTLSequence:          []int{},
+		DFBitPattern:         "",
+		TCPSeqPredictability: 0.0,
+		Confidence:           0,
+	}
+
+	probes := []int{22, 80, 443, 445, 3389}
+	for _, port := range probes {
+		dialer := net.Dialer{Timeout: opts.Timeout}
+		conn, err := dialer.DialContext(ctx, "tcp", targetIP+":"+strconv.Itoa(port))
+		if err == nil {
+			defer conn.Close()
+			fp.WindowSize[port] = 65535
+		}
+	}
+
+	return fp
+}
+
+func applyEvasionTechniques(packet []byte, evasion *EvasionTechnique) []byte {
+	if evasion == nil {
+		return packet
+	}
+
+	if evasion.FragmentSize > 0 && len(packet) > evasion.FragmentSize {
+		return packet[:evasion.FragmentSize]
+	}
+
+	if evasion.BadChecksums && len(packet) > 0 {
+		modified := make([]byte, len(packet))
+		copy(modified, packet)
+		if len(modified) > 10 {
+			modified[len(modified)-1] ^= 0xFF
+		}
+		return modified
+	}
+
+	return packet
+}
+
+func versionMatchesRange(version string, rangeSpec VersionRange) bool {
+	vparts := strings.Split(version, ".")
+	vmajor := 0
+	vminor := 0
+	vpatch := 0
+
+	if len(vparts) > 0 {
+		vmajor, _ = strconv.Atoi(vparts[0])
+	}
+	if len(vparts) > 1 {
+		vminor, _ = strconv.Atoi(vparts[1])
+	}
+	if len(vparts) > 2 {
+		vpatch, _ = strconv.Atoi(vparts[2])
+	}
+
+	switch rangeSpec.Operator {
+	case "<=":
+		return vmajor < rangeSpec.Major || (vmajor == rangeSpec.Major && vminor < rangeSpec.Minor) || (vmajor == rangeSpec.Major && vminor == rangeSpec.Minor && vpatch <= rangeSpec.Patch)
+	case ">=":
+		return vmajor > rangeSpec.Major || (vmajor == rangeSpec.Major && vminor > rangeSpec.Minor) || (vmajor == rangeSpec.Major && vminor == rangeSpec.Minor && vpatch >= rangeSpec.Patch)
+	case "<":
+		return vmajor < rangeSpec.Major || (vmajor == rangeSpec.Major && vminor < rangeSpec.Minor) || (vmajor == rangeSpec.Major && vminor == rangeSpec.Minor && vpatch < rangeSpec.Patch)
+	case ">":
+		return vmajor > rangeSpec.Major || (vmajor == rangeSpec.Major && vminor > rangeSpec.Minor) || (vmajor == rangeSpec.Major && vminor == rangeSpec.Minor && vpatch > rangeSpec.Patch)
+	case "==":
+		return vmajor == rangeSpec.Major && vminor == rangeSpec.Minor && vpatch == rangeSpec.Patch
+	}
+	return false
+}
+
+func matchCPE(cpe, version string) bool {
+	if !strings.Contains(cpe, version) {
+		return false
+	}
+	return true
+}
+
+func resolveDNS(ctx context.Context, hostname string) DNSResolution {
+	var resolver net.Resolver
+	ips, err := resolver.LookupIPAddr(ctx, hostname)
+	if err != nil {
+		return DNSResolution{Hostname: hostname}
+	}
+
+	var resolved []string
+	for _, ip := range ips {
+		resolved = append(resolved, ip.String())
+	}
+
+	return DNSResolution{
+		Hostname:   hostname,
+		IPs:        resolved,
+		RecordType: "A",
+	}
+}
+
+func reverseResolveDNS(ctx context.Context, ip string) string {
+	var resolver net.Resolver
+	names, err := resolver.LookupAddr(ctx, ip)
+	if err == nil && len(names) > 0 {
+		return strings.TrimSuffix(names[0], ".")
+	}
+	return ""
+}
+
+func canVulnerabilityMatch(vuln AdvancedVulnerability, port int, service, version string) bool {
+	portMatch := len(vuln.Ports) == 0
+	for _, p := range vuln.Ports {
+		if p == port {
+			portMatch = true
+			break
+		}
+	}
+	if !portMatch {
+		return false
+	}
+
+	serviceMatch := len(vuln.Services) == 0
+	for _, svc := range vuln.Services {
+		if strings.Contains(strings.ToLower(service), strings.ToLower(svc)) {
+			serviceMatch = true
+			break
+		}
+	}
+	if !serviceMatch && len(vuln.Services) > 0 {
+		return false
+	}
+
+	if len(vuln.VersionRanges) > 0 {
+		matched := false
+		for _, vrange := range vuln.VersionRanges {
+			if versionMatchesRange(version, vrange) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+
+	return true
+}
+
+func applyDecoyIPs(evasion *EvasionTechnique) []string {
+	if evasion == nil {
+		return []string{}
+	}
+	return evasion.Decoys
+}
+
+func modifyPacketWithDecoys(packet []byte, decoys []string) []byte {
+	if len(decoys) == 0 {
+		return packet
+	}
+	return packet
+}
+
+func generateNmapXMLHeader(results *PortScanResults) string {
+	header := `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<nmaprun scanner="ECLIPSE" args="port_scan" start="%d" startstr="%s" version="7.80" xmloutputversion="1.05">
+<scaninfo type="syn" protocol="tcp" numservices="%d" services="%s"/>
+`
+	startTime := results.ScannedAt.Unix()
+	startStr := results.ScannedAt.String()
+	return fmt.Sprintf(header, startTime, startStr, results.TotalScanned, buildPortList(results.Ports))
+}
+
+func buildPortList(ports []PortInfo) string {
+	if len(ports) == 0 {
+		return ""
+	}
+	var builder strings.Builder
+	for i, p := range ports {
+		if i > 0 {
+			builder.WriteString(",")
+		}
+		builder.WriteString(strconv.Itoa(p.Port))
+	}
+	return builder.String()
+}
+
+func generateNmapHostStartTag(_, _ int) string {
+	return fmt.Sprintf(`<host starttime="%d" endtime="%d">`, time.Now().Unix()-60, time.Now().Unix())
+}
+
+func generateNmapHostEndTag() string {
+	return `</host>`
+}
+
+func generateNmapPortsTag(ports []PortInfo) string {
+	var builder strings.Builder
+	builder.WriteString("<ports>\n")
+
+	statusCounts := make(map[string]int)
+	for _, p := range ports {
+		statusCounts[p.Status]++
+		builder.WriteString(fmt.Sprintf(`  <port protocol="%s" portid="%d">\n`, p.Protocol, p.Port))
+		builder.WriteString(fmt.Sprintf(`    <state state="%s" reason="%s" reason_ttl="0"/>\n`, p.Status, p.Reason))
+		if p.Service != "" {
+			builder.WriteString(fmt.Sprintf(`    <service name="%s" product="%s" version="%s"/>\n`, p.Service, p.Product, p.Version))
+		}
+		builder.WriteString(`  </port>\n`)
+	}
+
+	builder.WriteString("</ports>\n")
+	return builder.String()
+}
+
+func improveUDPDiscrimination(ctx context.Context, targetIP string, port int, opts PortScannerOptions) string {
+	dialer := net.Dialer{Timeout: opts.Timeout}
+	conn, err := dialer.DialContext(ctx, "udp", targetIP+":"+strconv.Itoa(port))
+	if err != nil {
+		return "filtered"
+	}
+	defer conn.Close()
+
+	probe := []byte{0, 0, 0, 0}
+	_, err = conn.Write(probe)
+	if err != nil {
+		return "filtered"
+	}
+
+	conn.SetReadDeadline(time.Now().Add(opts.Timeout))
+	response := make([]byte, 4096)
+	n, err := conn.Read(response)
+
+	if err != nil {
+		if strings.Contains(err.Error(), "timeout") {
+			return "open|filtered"
+		}
+		return "filtered"
+	}
+
+	if n > 0 {
+		return "open"
+	}
+
+	return "open|filtered"
+}
+
+func detectorICSServices(port int, service string) bool {
+	serviceID := strings.ToLower(service)
+	icsPorts := map[int]bool{
+		20:    true,
+		21:    true,
+		23:    true,
+		69:    true,
+		80:    true,
+		102:   true,
+		123:   true,
+		135:   true,
+		139:   true,
+		179:   true,
+		389:   true,
+		443:   true,
+		445:   true,
+		502:   true,
+		515:   true,
+		623:   true,
+		1433:  true,
+		1521:  true,
+		1883:  true,
+		2222:  true,
+		2404:  true,
+		3389:  true,
+		4911:  true,
+		5000:  true,
+		5060:  true,
+		5432:  true,
+		5800:  true,
+		5984:  true,
+		6379:  true,
+		7001:  true,
+		7002:  true,
+		8000:  true,
+		8008:  true,
+		8080:  true,
+		8081:  true,
+		8089:  true,
+		8090:  true,
+		8443:  true,
+		8883:  true,
+		9042:  true,
+		9092:  true,
+		9200:  true,
+		9300:  true,
+		10000: true,
+		11211: true,
+		15672: true,
+		16192: true,
+		18000: true,
+		19999: true,
+		20000: true,
+		27017: true,
+		27018: true,
+		27019: true,
+		27020: true,
+		44444: true,
+		47808: true,
+		50000: true,
+		50001: true,
+		55555: true,
+		61616: true,
+	}
+
+	if icsPorts[port] {
+		return true
+	}
+
+	icsServices := []string{"modbus", "opcua", "profibus", "canbus", "bacnet", "opc", "dnet", "ethercat", "profinet", "codesys", "mqtt", "kafka", "amqp", "jms", "iot"}
+	for _, ics := range icsServices {
+		if strings.Contains(serviceID, ics) {
+			return true
+		}
+	}
+
+	return false
 }

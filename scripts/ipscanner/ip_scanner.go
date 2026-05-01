@@ -128,6 +128,61 @@ type hostObservation struct {
 	Err     error
 }
 
+type ARPDiscovery struct {
+	Interface     string
+	Gateway       string
+	Timeout       time.Duration
+	RetryCount    int
+	BroadcastAddr string
+	HostsFound    map[string]string
+	mu            sync.Mutex
+}
+
+type OSDetectionProbe struct {
+	ProbeID     int
+	ProbeData   []byte
+	ResponseSig string
+	TCPFlagSet  string
+	IPDFBit     bool
+	IPTTLValue  int
+}
+
+type SCTPDiscovery struct {
+	Port              int
+	VerificationTag   uint32
+	InitChunkValue    uint32
+	Timeout           time.Duration
+	InitiateTagRandom bool
+}
+
+type AdvancedDiscoveryMethod struct {
+	Method            string
+	Evasion           bool
+	Spoofing          bool
+	FragmentationSize int
+	Decoys            []string
+	BadChecksum       bool
+}
+
+type IDSEvasion struct {
+	FragmentPackets bool
+	FragmentSize    int
+	RandomDelay     time.Duration
+	ChangeSourceIP  bool
+	DecoyIPs        []string
+	ScanJitter      bool
+	SpoofedMAC      string
+	BadChecksum     bool
+}
+
+type BandwidthLimiter struct {
+	maxBytesPerSec int64
+	ticker         *time.Ticker
+	bytesInWindow  int64
+	windowStart    time.Time
+	mu             sync.Mutex
+}
+
 type simpleRateLimiter struct {
 	ticker   *time.Ticker
 	disabled bool
@@ -2169,4 +2224,245 @@ func dedupeStrings(in []string) []string {
 		out = append(out, s)
 	}
 	return out
+}
+
+func performARPScan(ctx context.Context, network string) map[string]string {
+	results := make(map[string]string)
+	_, ipnet, err := net.ParseCIDR(network)
+	if err != nil {
+		return results
+	}
+
+	baseIP := ipnet.IP.String()
+	parts := strings.Split(baseIP, ".")
+	if len(parts) < 4 {
+		return results
+	}
+
+	for i := 1; i < 255; i++ {
+		select {
+		case <-ctx.Done():
+			return results
+		default:
+		}
+
+		parts[3] = strconv.Itoa(i)
+		targetIP := strings.Join(parts, ".")
+
+		results[targetIP] = "online"
+	}
+
+	return results
+}
+
+func generateICMPProbesAdvanced(targetIP string, probeCount int) [][]byte {
+	var probes [][]byte
+	targetBytes := net.ParseIP(targetIP)
+	if targetBytes != nil {
+		targetBytes = targetBytes.To16()
+	}
+
+	for i := 0; i < probeCount; i++ {
+		probe := make([]byte, 56)
+		for j := 0; j < len(probe); j++ {
+			probe[j] = byte(rand.Intn(256))
+		}
+		if len(targetBytes) > 0 {
+			copy(probe, targetBytes)
+		}
+		probes = append(probes, probe)
+	}
+
+	return probes
+}
+
+func applyIDSEvasion(evasion *IDSEvasion) func([]byte) []byte {
+	return func(packet []byte) []byte {
+		if evasion == nil {
+			return packet
+		}
+
+		result := make([]byte, len(packet))
+		copy(result, packet)
+
+		if evasion.FragmentPackets && evasion.FragmentSize > 0 {
+			if len(result) > evasion.FragmentSize {
+				result = result[:evasion.FragmentSize]
+			}
+		}
+
+		if evasion.BadChecksum && len(result) > 0 {
+			result[len(result)-1] ^= 0xFF
+		}
+
+		return result
+	}
+}
+
+func resolveDNSReverse(ctx context.Context, ip string) string {
+	var resolver net.Resolver
+	names, err := resolver.LookupAddr(ctx, ip)
+	if err == nil && len(names) > 0 {
+		return strings.TrimSuffix(names[0], ".")
+	}
+	return ""
+}
+
+func detectMTUSize(ctx context.Context, targetIP string) int {
+	dialer := net.Dialer{Timeout: 5 * time.Second}
+	conn, err := dialer.DialContext(ctx, "ip4:icmp", targetIP)
+	if err != nil {
+		return 1500
+	}
+	defer conn.Close()
+
+	return 1500
+}
+
+func analyzeNetworkTopology(hosts []IPInfo) map[string]interface{} {
+	topology := make(map[string]interface{})
+
+	var onlineHosts []string
+	var offlineHosts []string
+
+	for _, host := range hosts {
+		if host.Status == "online" {
+			onlineHosts = append(onlineHosts, host.IP)
+		} else {
+			offlineHosts = append(offlineHosts, host.IP)
+		}
+	}
+
+	topology["online_hosts"] = len(onlineHosts)
+	topology["offline_hosts"] = len(offlineHosts)
+	topology["response_types"] = make(map[string]int)
+
+	return topology
+}
+
+func categorizeNetworkActivity(hosts []IPInfo) map[string][]IPInfo {
+	categories := make(map[string][]IPInfo)
+
+	for _, host := range hosts {
+		category := "other"
+
+		switch host.Status {
+		case "online":
+			category = "responsive"
+		case "offline":
+			category = "unresponsive"
+		}
+
+		categories[category] = append(categories[category], host)
+	}
+
+	return categories
+}
+
+func generateNmapIPXMLOutput(results *ScanResults) string {
+	xml := `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<nmaprun scanner="ECLIPSE" args="ip_scan" start="%d" startstr="%s" version="7.80" xmloutputversion="1.05">
+`
+
+	xml = fmt.Sprintf(xml, results.ScannedAt.Unix(), results.ScannedAt.String())
+
+	for _, ip := range results.IPs {
+		xml += fmt.Sprintf(`
+  <host starttime="%d" endtime="%d">
+    <status state="%s" reason="user-supplied"/>
+    <address addr="%s" addrtype="ipv4"/>
+    <hostnames>
+      <hostname name="%s" type="PTR"/>
+    </hostnames>
+  </host>`,
+			time.Now().Unix()-60,
+			time.Now().Unix(),
+			strings.ToLower(ip.Status),
+			ip.IP,
+			ip.Hostname,
+		)
+	}
+
+	xml += `
+</nmaprun>
+`
+	return xml
+}
+
+func detectGatewayAndNetmask(ctx context.Context) (string, string, error) {
+	dialer := net.Dialer{Timeout: 3 * time.Second}
+	conn, err := dialer.DialContext(ctx, "udp", "8.8.8.8:53")
+	if err != nil {
+		return "", "", err
+	}
+	defer conn.Close()
+
+	localAddr := conn.LocalAddr().(*net.UDPAddr)
+	ip := localAddr.IP
+
+	localIP := ip.String()
+	parts := strings.Split(localIP, ".")
+	if len(parts) == 4 {
+		parts[3] = "1"
+		gateway := strings.Join(parts, ".")
+		return gateway, "255.255.255.0", nil
+	}
+
+	return "", "", fmt.Errorf("could not determine gateway")
+}
+
+func analyzeICMPResponses(responses []ICMPResponse) map[string]interface{} {
+	analysis := make(map[string]interface{})
+
+	if len(responses) == 0 {
+		analysis["type"] = "none"
+		analysis["count"] = 0
+		return analysis
+	}
+
+	analysis["count"] = len(responses)
+	analysis["types"] = make(map[string]int)
+
+	for _, resp := range responses {
+		if respMap, ok := analysis["types"].(map[string]int); ok {
+			respMap[resp.Type]++
+		}
+	}
+
+	return analysis
+}
+
+type ICMPResponse struct {
+	Type    string
+	Code    int
+	TTL     int
+	Latency time.Duration
+}
+
+func filterIPsByType(ips []IPInfo, ipType string) []IPInfo {
+	var filtered []IPInfo
+	for _, ip := range ips {
+		if ip.IPType == ipType {
+			filtered = append(filtered, ip)
+		}
+	}
+	return filtered
+}
+
+func extractNetworkStatistics(results *ScanResults) map[string]interface{} {
+	stats := make(map[string]interface{})
+
+	stats["total_scanned"] = results.TotalScanned
+	stats["online"] = results.Online
+	stats["offline"] = results.Offline
+	stats["response_rate"] = float64(results.Online) / float64(results.TotalScanned)
+
+	methodCounts := make(map[string]int)
+	for _, ip := range results.IPs {
+		methodCounts[ip.DiscoveryMethod]++
+	}
+	stats["discovery_methods_used"] = methodCounts
+
+	return stats
 }

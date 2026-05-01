@@ -4,8 +4,9 @@ go 1.25.0
 
 require (
 	github.com/bwmarrin/discordgo v0.29.0
+	github.com/google/gopacket v1.1.19
 	github.com/shirou/gopsutil v3.21.11+incompatible
-	golang.org/x/sys v0.42.0
+	golang.org/x/sys v0.43.0
 	modernc.org/sqlite v1.48.2
 )
 
@@ -21,7 +22,7 @@ require (
 	github.com/tklauser/go-sysconf v0.3.16 // indirect
 	github.com/tklauser/numcpus v0.11.0 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
-	golang.org/x/crypto v0.0.0-20210421170649-83a5a9bb288b // indirect
+	golang.org/x/crypto v0.50.0 // indirect
 	modernc.org/libc v1.70.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
