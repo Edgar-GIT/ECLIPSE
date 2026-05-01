@@ -2,6 +2,8 @@
 
 ![ECLIPSE](main.png)
 
+(This tool is currently under development)
+
 ## Overview
 
 **ECLIPSE** is a comprehensive, multi-purpose security toolkit designed for cybersecurity professionals, penetration testers, and ethical hackers. Built with **Go** for maximum speed, efficiency, and reliability, ECLIPSE combines multiple reconnaissance, exploitation, and analysis tools into a single, intuitive platform.
