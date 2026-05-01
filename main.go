@@ -137,13 +137,9 @@ func HistoryMenu() {
 			fmt.Printf("%sPress Enter to continue...%s", utils.Green, utils.Reset)
 			reader.ReadString('\n')
 		case "2":
-			fmt.Printf("%s[*] View Scan Results (IP) - Feature coming soon%s\n\n", utils.Yellow, utils.Reset)
-			fmt.Printf("%sPress Enter to continue...%s", utils.Green, utils.Reset)
-			reader.ReadString('\n')
+			ipscanner.ViewScanResults()
 		case "3":
-			fmt.Printf("%s[*] View Port Scan Results - Feature coming soon%s\n\n", utils.Yellow, utils.Reset)
-			fmt.Printf("%sPress Enter to continue...%s", utils.Green, utils.Reset)
-			reader.ReadString('\n')
+			portscanner.ViewPortScanResults()
 		case "4":
 			fmt.Printf("%s[*] View Website Report - Feature coming soon%s\n\n", utils.Yellow, utils.Reset)
 			fmt.Printf("%sPress Enter to continue...%s", utils.Green, utils.Reset)
