@@ -18,7 +18,10 @@ func ViewPCReportHistory() {
 	dir := pathPCReportsDir()
 	for {
 		utils.ClearTerminal()
-		fmt.Printf("\n%s============ PC SYSTEM REPORTS ============%s\n\n", utils.Blue, utils.Reset)
+		fmt.Printf("\n%s╔════════════════════════════════════════════════════════════════╗%s\n", utils.Purple, utils.Reset)
+		fmt.Printf("%s║         PC SYSTEM REPORTS — ficheiros exportados            ║%s\n", utils.Purple, utils.Reset)
+		fmt.Printf("%s╚════════════════════════════════════════════════════════════════╝%s\n\n", utils.Purple, utils.Reset)
+
 		entries, err := listReportFiles(dir)
 		if err != nil {
 			fmt.Printf("%s[!] %v%s\n", utils.Red, err, utils.Reset)
@@ -26,37 +29,66 @@ func ViewPCReportHistory() {
 			return
 		}
 		if len(entries) == 0 {
-			fmt.Printf("%sNo saved reports yet. Run PC Utilities and export a report.%s\n", utils.Yellow, utils.Reset)
-			utils.PrintReturnOption("0")
-			fmt.Printf("\n%sOption: %s", utils.Green, utils.Reset)
+			fmt.Printf("%sNenhum relatório guardado. Usa PC Utilities → exportar.%s\n\n", utils.Yellow, utils.Reset)
+			fmt.Printf("%s[0]  Voltar ao menu History%s\n", utils.Green, utils.Reset)
+			fmt.Printf("\n%sOpção: %s", utils.Green, utils.Reset)
 			line, _ := reader.ReadString('\n')
 			if strings.TrimSpace(line) == "0" {
 				return
 			}
 			continue
 		}
+
 		sort.Slice(entries, func(i, j int) bool { return entries[i].name > entries[j].name })
 		for i, e := range entries {
-			fmt.Printf("%s[%d]%s %s\n", utils.Green, i+1, utils.Reset, e.name)
+			tag := "[TXT]"
+			if strings.HasSuffix(strings.ToLower(e.name), ".html") {
+				tag = "[HTML · browser]"
+			}
+			fmt.Printf("%s[%2d]%s %s  %s\n", utils.Green, i+1, utils.Reset, tag, e.name)
 		}
-		fmt.Printf("\n%s[0] Return%s\n", utils.Yellow, utils.Reset)
-		fmt.Printf("\n%sOpen report # (txt via pager if available): %s", utils.Green, utils.Reset)
+
+		fmt.Printf("\n%s──────── Navegação ────────%s\n", utils.Blue, utils.Reset)
+		fmt.Printf("%s[0]  Voltar ao menu History (sair desta lista)%s\n", utils.Yellow, utils.Reset)
+		fmt.Printf("%s[#]  Abrir relatório pelo número%s\n", utils.Blue, utils.Reset)
+		fmt.Printf("\n%sEscolhe opção: %s", utils.Green, utils.Reset)
 		line, _ := reader.ReadString('\n')
 		line = strings.TrimSpace(line)
 		if line == "" || line == "0" {
 			return
 		}
 		var n int
-		fmt.Sscanf(line, "%d", &n)
-		if n < 1 || n > len(entries) {
-			fmt.Printf("%sInvalid.%s\n", utils.Yellow, utils.Reset)
+		if _, err := fmt.Sscanf(line, "%d", &n); err != nil || n < 1 || n > len(entries) {
+			fmt.Printf("%sOpção inválida.%s\n", utils.Yellow, utils.Reset)
 			utils.WaitForEnter(reader)
 			continue
 		}
+
 		path := filepath.Join(dir, entries[n-1].name)
-		openReportFile(path, entries[n-1].name)
-		fmt.Printf("\n%sPress Enter...%s", utils.Green, utils.Reset)
-		reader.ReadString('\n')
+		base := entries[n-1].name
+		openReportFile(path, base)
+
+		for {
+			utils.ClearTerminal()
+			fmt.Printf("\n%s── Relatório: %s ──%s\n\n", utils.Blue, base, utils.Reset)
+			if strings.HasSuffix(strings.ToLower(base), ".html") {
+				fmt.Printf("%sAberto no browser (gráficos HTML).%s\n\n", utils.Green, utils.Reset)
+			}
+			fmt.Printf("%s[Enter]  Voltar à lista de reports%s\n", utils.Green, utils.Reset)
+			fmt.Printf("%s[0]      Voltar ao menu History%s\n", utils.Yellow, utils.Reset)
+			fmt.Printf("%s[R]      Reabrir este ficheiro%s\n", utils.Blue, utils.Reset)
+			fmt.Printf("\n%sOpção: %s", utils.Green, utils.Reset)
+			sub, _ := reader.ReadString('\n')
+			sub = strings.TrimSpace(strings.ToLower(sub))
+			if sub == "0" {
+				return
+			}
+			if sub == "r" {
+				openReportFile(path, base)
+				continue
+			}
+			break
+		}
 	}
 }
 
@@ -68,7 +100,7 @@ func listReportFiles(dir string) ([]reportEntry, error) {
 	d, err := os.Open(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return []reportEntry{}, nil
 		}
 		return nil, err
 	}
@@ -88,20 +120,22 @@ func listReportFiles(dir string) ([]reportEntry, error) {
 
 func openReportFile(fullPath, base string) {
 	utils.ClearTerminal()
-	if strings.HasSuffix(base, ".html") {
+	if strings.HasSuffix(strings.ToLower(base), ".html") {
 		if runtime.GOOS == "windows" {
 			if err := exec.Command("rundll32", "url.dll,FileProtocolHandler", fullPath).Start(); err == nil {
-				fmt.Printf("%sOpened in default browser.%s\n", utils.Green, utils.Reset)
+				fmt.Printf("%s%s%s\n", utils.Green, "Browser aberto com relatório animado (HTML).", utils.Reset)
 				return
 			}
 		}
 		for _, bin := range []string{"xdg-open", "open"} {
 			cmd := exec.Command(bin, fullPath)
 			if err := cmd.Start(); err == nil {
-				fmt.Printf("%sOpened in browser / default app.%s\n", utils.Green, utils.Reset)
+				fmt.Printf("%s%s%s\n", utils.Green, "Browser aberto com relatório animado (HTML).", utils.Reset)
 				return
 			}
 		}
+		fmt.Printf("%sNão foi possível abrir o browser. Abre manualmente:%s\n%s\n", utils.Yellow, utils.Reset, fullPath)
+		return
 	}
 	b, err := os.ReadFile(fullPath)
 	if err != nil {

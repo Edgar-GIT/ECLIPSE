@@ -8,7 +8,21 @@ import (
 	"programa/utils"
 )
 
-const tableWidth = 76
+func clrBorder(s string) string {
+	return utils.RGBText(255, 79, 216, s)
+}
+
+func clrKey(s string) string {
+	return utils.RGBText(0, 245, 212, s)
+}
+
+func clrAccent(s string) string {
+	return utils.RGBText(255, 214, 10, s)
+}
+
+func clrDim(s string) string {
+	return utils.RGBText(185, 198, 255, s)
+}
 
 func gradientTitle(s string, useColor bool) string {
 	if !useColor {
@@ -18,16 +32,16 @@ func gradientTitle(s string, useColor bool) string {
 		return s
 	}
 	var b strings.Builder
-	n := len([]rune(s))
 	rs := []rune(s)
+	n := len(rs)
 	for i, ch := range rs {
 		t := 0.0
 		if n > 1 {
 			t = float64(i) / float64(n-1)
 		}
-		r := lerp(90, 255, t)
-		g := lerp(140, 90, t)
-		bl := lerp(255, 180, t)
+		r := lerp(255, 80, t)
+		g := lerp(100, 250, t)
+		bl := lerp(200, 255, t)
 		b.WriteString(utils.RGBText(r, g, bl, string(ch)))
 	}
 	return b.String()
@@ -38,8 +52,8 @@ func lerp(a, b int, t float64) int {
 }
 
 func rgbBarPct(pct float64, width int, useColor bool) string {
-	if width < 8 {
-		width = 8
+	if width < 12 {
+		width = 12
 	}
 	if pct < 0 {
 		pct = 0
@@ -54,19 +68,19 @@ func rgbBarPct(pct float64, width int, useColor bool) string {
 	var b strings.Builder
 	for i := 0; i < width; i++ {
 		if i < filled {
-			t := float64(i+1) / float64(filled)
-			if filled == 0 {
-				t = 0
+			t := 0.0
+			if filled > 0 {
+				t = float64(i+1) / float64(filled)
 			}
 			r, g, bl := barRGB(pct, t)
 			if useColor {
-				b.WriteString(utils.RGBText(r, g, bl, "█"))
+				b.WriteString(utils.RGBText(r, g, bl, "▓"))
 			} else {
 				b.WriteRune('#')
 			}
 		} else {
 			if useColor {
-				b.WriteString(utils.RGBText(45, 48, 62, "░"))
+				b.WriteString(utils.RGBText(38, 42, 68, "░"))
 			} else {
 				b.WriteRune('.')
 			}
@@ -74,70 +88,192 @@ func rgbBarPct(pct float64, width int, useColor bool) string {
 	}
 	suffix := fmt.Sprintf(" %.1f%%", pct)
 	if useColor {
-		return b.String() + utils.RGBText(200, 200, 220, suffix)
+		return b.String() + clrAccent(suffix)
 	}
 	return b.String() + suffix
 }
 
 func barRGB(globalPct, segT float64) (int, int, int) {
-	u := (globalPct*0.6 + segT*40) / 100
+	u := (globalPct*0.45 + segT*55) / 100
 	if u > 1 {
 		u = 1
 	}
-	r := lerp(60, 255, u)
-	g := lerp(220, 70, u)
-	bl := lerp(120, 90, u)
+	r := lerp(20, 255, u)
+	g := lerp(255, 40, u)
+	bl := lerp(180, 140, u)
 	return r, g, bl
 }
 
-func boxTop(title string, useColor bool) string {
-	line := strings.Repeat("═", tableWidth-2)
-	inner := tableWidth - 6
-	tit := truncateRunes(title, inner)
-	pad := inner - len([]rune(tit))
+func boxTopTw(tw int, title string, useColor bool) string {
+	horiz := tw - 2
+	top := "╔" + strings.Repeat("═", horiz) + "╗"
+	lineInner := tw - 4
+	if lineInner < 8 {
+		lineInner = 8
+	}
+	tit := truncateRunes(title, lineInner)
+	pad := lineInner - len([]rune(tit))
 	if pad < 0 {
 		pad = 0
 	}
+	var titOut string
 	if useColor {
-		return fmt.Sprintf("  ╔%s╗\n  ║ %s%s ║", line, gradientTitle(tit, true), strings.Repeat(" ", pad))
+		titOut = gradientTitle(tit, true)
+	} else {
+		titOut = tit
 	}
-	return fmt.Sprintf("  ╔%s╗\n  ║ %s%s ║", line, tit, strings.Repeat(" ", pad))
+	var line string
+	if useColor {
+		top = clrBorder(top)
+		line = clrBorder("║") + " " + titOut + strings.Repeat(" ", pad) + " " + clrBorder("║")
+	} else {
+		line = fmt.Sprintf("║ %s%s ║", titOut, strings.Repeat(" ", pad))
+	}
+	return top + "\n" + line
 }
 
-func boxSep(useColor bool) string {
-	line := strings.Repeat("═", tableWidth-2)
+func boxBottomTw(tw int, useColor bool) string {
+	horiz := tw - 2
+	s := "╚" + strings.Repeat("═", horiz) + "╝"
 	if useColor {
-		return utils.RGBText(70, 100, 160, "  ╠"+line+"╣")
+		return clrBorder(s)
 	}
-	return "  +" + strings.Repeat("=", tableWidth-2) + "+"
+	return s
 }
 
-func boxBottom(useColor bool) string {
-	line := strings.Repeat("═", tableWidth-2)
+func rowSepTw(tw int, useColor bool) string {
+	mid := strings.Repeat("─", tw-2)
+	s := "╟" + mid + "╢"
 	if useColor {
-		return utils.RGBText(70, 100, 160, "  ╚"+line+"╝")
+		return clrBorder(s)
 	}
-	return "  +" + strings.Repeat("=", tableWidth-2) + "+"
+	return s
 }
 
-func row2(k, v string, useColor bool) string {
+func row2Tw(tw int, k, v string, useColor bool) string {
 	k = strings.TrimSpace(k)
 	v = strings.TrimSpace(v)
 	if v == "" {
 		v = "—"
 	}
-	kw := 22
-	vw := tableWidth - 8 - kw
-	ks := truncateRunes(k, kw)
-	vs := truncateRunes(v, vw)
-	if useColor {
-		return fmt.Sprintf("  ║ %s%s ║ %s%s ║",
-			utils.Yellow+ks+utils.Reset,
-			strings.Repeat(" ", kw-len([]rune(ks))),
-			vs,
-			strings.Repeat(" ", vw-len([]rune(vs))))
+	payloadW := tw - 4
+	if payloadW < 8 {
+		payloadW = 8
 	}
-	return fmt.Sprintf("  | %-*s | %-*s |", kw, ks, vw, vs)
+	sep := " │ "
+	sepW := len([]rune(sep))
+	avail := payloadW - sepW
+	if avail < 4 {
+		avail = 4
+	}
+	keyW := avail / 2
+	valW := avail - keyW
+	ks := truncateRunes(k, keyW)
+	vs := truncateRunes(v, valW)
+	padK := keyW - len([]rune(ks))
+	padV := valW - len([]rune(vs))
+	if padK < 0 {
+		padK = 0
+	}
+	if padV < 0 {
+		padV = 0
+	}
+	if useColor {
+		left := clrKey(ks) + strings.Repeat(" ", padK)
+		right := clrDim(vs) + strings.Repeat(" ", padV)
+		return clrBorder("║") + " " + left + clrBorder(sep) + right + " " + clrBorder("║")
+	}
+	return "║ " + ks + strings.Repeat(" ", padK) + sep + vs + strings.Repeat(" ", padV) + " ║"
+}
+
+func tableKeyValueTw(tw int, title string, rows [][2]string, useColor bool) string {
+	var b strings.Builder
+	b.WriteString(boxTopTw(tw, title, useColor))
+	b.WriteByte('\n')
+	for i, row := range rows {
+		b.WriteString(row2Tw(tw, row[0], row[1], useColor))
+		b.WriteByte('\n')
+		if i < len(rows)-1 {
+			b.WriteString(rowSepTw(tw, useColor))
+			b.WriteByte('\n')
+		}
+	}
+	b.WriteString(boxBottomTw(tw, useColor))
+	b.WriteByte('\n')
+	return b.String()
+}
+
+func tableMultiHeaderTw(tw int, title string, headers []string, rows [][]string, useColor bool) string {
+	if len(headers) == 0 {
+		return ""
+	}
+	n := len(headers)
+	payloadW := tw - 4
+	if payloadW < n*4 {
+		payloadW = n * 4
+	}
+	sepCell := " │ "
+	sepW := len([]rune(sepCell)) * (n - 1)
+	avail := payloadW - sepW
+	if avail < n {
+		avail = n
+	}
+	colW := avail / n
+
+	var b strings.Builder
+	b.WriteString(boxTopTw(tw, title, useColor))
+	b.WriteByte('\n')
+
+	headParts := make([]string, n)
+	for i, h := range headers {
+		hs := truncateRunes(h, colW)
+		pad := colW - len([]rune(hs))
+		if pad < 0 {
+			pad = 0
+		}
+		if useColor {
+			headParts[i] = clrAccent(hs) + strings.Repeat(" ", pad)
+		} else {
+			headParts[i] = hs + strings.Repeat(" ", pad)
+		}
+	}
+	headLine := strings.Join(headParts, sepCell)
+	if useColor {
+		b.WriteString(clrBorder("║") + " " + headLine + " " + clrBorder("║") + "\n")
+	} else {
+		b.WriteString("║ " + headLine + " ║\n")
+	}
+	b.WriteString(rowSepTw(tw, useColor))
+	b.WriteByte('\n')
+
+	for _, row := range rows {
+		cells := make([]string, n)
+		for i := 0; i < n; i++ {
+			cell := ""
+			if i < len(row) {
+				cell = strings.TrimSpace(row[i])
+			}
+			cs := truncateRunes(cell, colW)
+			pad := colW - len([]rune(cs))
+			if pad < 0 {
+				pad = 0
+			}
+			if useColor {
+				cells[i] = clrDim(cs) + strings.Repeat(" ", pad)
+			} else {
+				cells[i] = cs + strings.Repeat(" ", pad)
+			}
+		}
+		line := strings.Join(cells, sepCell)
+		if useColor {
+			b.WriteString(clrBorder("║") + " " + line + " " + clrBorder("║") + "\n")
+		} else {
+			b.WriteString("║ " + line + " ║\n")
+		}
+	}
+	b.WriteString(boxBottomTw(tw, useColor))
+	b.WriteByte('\n')
+	return b.String()
 }
 
 func truncateRunes(s string, max int) string {
@@ -151,86 +287,8 @@ func truncateRunes(s string, max int) string {
 	return string(r[:max-3]) + "..."
 }
 
-func tableKeyValue(title string, rows [][2]string, useColor bool) string {
-	var b strings.Builder
-	b.WriteString(boxTop(title, useColor))
-	b.WriteByte('\n')
-	for i, row := range rows {
-		b.WriteString(row2(row[0], row[1], useColor))
-		b.WriteByte('\n')
-		if i < len(rows)-1 {
-			mid := strings.Repeat("─", tableWidth-2)
-			if useColor {
-				b.WriteString("  ╟" + mid + "╢\n")
-			} else {
-				b.WriteString("  |" + strings.Repeat("-", tableWidth-2) + "|\n")
-			}
-		}
-	}
-	b.WriteString(boxBottom(useColor))
-	b.WriteByte('\n')
-	return b.String()
-}
-
-func tableMultiHeader(title string, headers []string, rows [][]string, useColor bool) string {
-	if len(headers) == 0 {
-		return ""
-	}
-	n := len(headers)
-	sepChars := 0
-	if n > 1 {
-		sepChars = (n - 1) * 3
-	}
-	avail := tableWidth - 6 - sepChars
-	if avail < n*4 {
-		avail = n * 4
-	}
-	colW := avail / n
-	var b strings.Builder
-	b.WriteString(boxTop(title, useColor))
-	b.WriteByte('\n')
-	b.WriteString("  ║ ")
-	for i, h := range headers {
-		hs := truncateRunes(h, colW)
-		if useColor {
-			b.WriteString(utils.Purple + hs + utils.Reset)
-		} else {
-			b.WriteString(hs)
-		}
-		b.WriteString(strings.Repeat(" ", colW-len([]rune(hs))))
-		if i < n-1 {
-			b.WriteString(" │ ")
-		}
-	}
-	b.WriteString(" ║\n")
-	mid := strings.Repeat("─", tableWidth-2)
-	if useColor {
-		b.WriteString("  ╟" + mid + "╢\n")
-	} else {
-		b.WriteString("  |" + strings.Repeat("-", tableWidth-2) + "|\n")
-	}
-	for _, row := range rows {
-		b.WriteString("  ║ ")
-		for i := 0; i < n; i++ {
-			cell := ""
-			if i < len(row) {
-				cell = row[i]
-			}
-			cs := truncateRunes(strings.TrimSpace(cell), colW)
-			b.WriteString(cs)
-			b.WriteString(strings.Repeat(" ", colW-len([]rune(cs))))
-			if i < n-1 {
-				b.WriteString(" │ ")
-			}
-		}
-		b.WriteString(" ║\n")
-	}
-	b.WriteString(boxBottom(useColor))
-	b.WriteByte('\n')
-	return b.String()
-}
-
 func RenderReportText(r *SystemReport, useColor bool) string {
+	tw := effectiveTermWidth()
 	var o strings.Builder
 	ts := r.CollectedAt.Format("2006-01-02 15:04:05")
 	head := fmt.Sprintf("ECLIPSE · System report · %s", ts)
@@ -241,6 +299,11 @@ func RenderReportText(r *SystemReport, useColor bool) string {
 		o.WriteString(head)
 	}
 	o.WriteString("\n\n")
+
+	barW := tw - 24
+	if barW < 24 {
+		barW = 24
+	}
 
 	var hostRows [][2]string
 	hostRows = append(hostRows, [2]string{"Hostname", r.Hostname})
@@ -268,7 +331,7 @@ func RenderReportText(r *SystemReport, useColor bool) string {
 	if r.UserNames != "" {
 		hostRows = append(hostRows, [2]string{"Logged-in users", r.UserNames})
 	}
-	o.WriteString(tableKeyValue("Host & session", hostRows, useColor))
+	o.WriteString(tableKeyValueTw(tw, "Host & session", hostRows, useColor))
 	o.WriteString("\n")
 
 	var netRows [][2]string
@@ -282,7 +345,7 @@ func RenderReportText(r *SystemReport, useColor bool) string {
 	}
 	netRows = append(netRows, [2]string{"Default / routed iface", nz(r.DefaultIface)})
 	netRows = append(netRows, [2]string{"Active connection", nz(r.ActiveConn)})
-	o.WriteString(tableKeyValue("Network summary", netRows, useColor))
+	o.WriteString(tableKeyValueTw(tw, "Network summary", netRows, useColor))
 	o.WriteString("\n")
 
 	if len(r.InterfaceRows) > 0 {
@@ -294,7 +357,7 @@ func RenderReportText(r *SystemReport, useColor bool) string {
 			}
 			rows = append(rows, []string{iface.Name, typ, strings.Join(iface.Addrs, ", ")})
 		}
-		o.WriteString(tableMultiHeader("Interfaces", []string{"Name", "Type", "Addresses"}, rows, useColor))
+		o.WriteString(tableMultiHeaderTw(tw, "Interfaces", []string{"Name", "Type", "Addresses"}, rows, useColor))
 		o.WriteString("\n")
 	}
 
@@ -307,7 +370,7 @@ func RenderReportText(r *SystemReport, useColor bool) string {
 			}
 			rows = append(rows, []string{w.SSID, w.Signal, w.Security, act})
 		}
-		o.WriteString(tableMultiHeader("Wi‑Fi networks (scan)", []string{"SSID", "Signal", "Security", "Active"}, rows, useColor))
+		o.WriteString(tableMultiHeaderTw(tw, "Wi‑Fi networks (scan)", []string{"SSID", "Signal", "Security", "Active"}, rows, useColor))
 		o.WriteString("\n")
 	}
 
@@ -320,13 +383,12 @@ func RenderReportText(r *SystemReport, useColor bool) string {
 	if r.LoadAvg != "" {
 		cpuRows = append(cpuRows, [2]string{"Load avg 1/5/15", r.LoadAvg})
 	}
-	o.WriteString(tableKeyValue("Processor (CPU)", cpuRows, useColor))
+	o.WriteString(tableKeyValueTw(tw, "Processor (CPU)", cpuRows, useColor))
 	o.WriteString("\n")
-	barW := tableWidth - 20
 	if useColor {
-		o.WriteString("  " + utils.RGBText(140, 180, 255, "CPU load bar: ") + rgbBarPct(r.CPUUsagePct, barW, useColor) + "\n\n")
+		o.WriteString(" " + clrAccent("CPU load ") + rgbBarPct(r.CPUUsagePct, barW, useColor) + "\n\n")
 	} else {
-		o.WriteString("  CPU load bar: " + rgbBarPct(r.CPUUsagePct, barW, false) + "\n\n")
+		o.WriteString(" CPU load " + rgbBarPct(r.CPUUsagePct, barW, false) + "\n\n")
 	}
 
 	gpuList := r.GPUNames
@@ -337,7 +399,7 @@ func RenderReportText(r *SystemReport, useColor bool) string {
 	for i, g := range gpuList {
 		gpuRows = append(gpuRows, [2]string{fmt.Sprintf("GPU #%d", i+1), g})
 	}
-	o.WriteString(tableKeyValue("Graphics (GPU)", gpuRows, useColor))
+	o.WriteString(tableKeyValueTw(tw, "Graphics (GPU)", gpuRows, useColor))
 	o.WriteString("\n")
 
 	var memRows [][2]string
@@ -350,12 +412,12 @@ func RenderReportText(r *SystemReport, useColor bool) string {
 		memRows = append(memRows, [2]string{"Swap used", formatBytes(r.SwapUsed)})
 		memRows = append(memRows, [2]string{"Swap used %", fmt.Sprintf("%.1f%%", r.SwapUsedPct)})
 	}
-	o.WriteString(tableKeyValue("Memory (RAM)", memRows, useColor))
+	o.WriteString(tableKeyValueTw(tw, "Memory (RAM)", memRows, useColor))
 	o.WriteString("\n")
 	if useColor {
-		o.WriteString("  " + utils.RGBText(140, 180, 255, "RAM usage bar: ") + rgbBarPct(r.RAMUsedPct, barW, useColor) + "\n\n")
+		o.WriteString(" " + clrAccent("RAM usage ") + rgbBarPct(r.RAMUsedPct, barW, useColor) + "\n\n")
 	} else {
-		o.WriteString("  RAM usage bar: " + rgbBarPct(r.RAMUsedPct, barW, false) + "\n\n")
+		o.WriteString(" RAM usage " + rgbBarPct(r.RAMUsedPct, barW, false) + "\n\n")
 	}
 
 	var storRows [][2]string
@@ -369,12 +431,12 @@ func RenderReportText(r *SystemReport, useColor bool) string {
 		pctFree = float64(r.DiskFreeBytes) * 100 / float64(r.DiskTotalBytes)
 	}
 	storRows = append(storRows, [2]string{"Volume used %", fmt.Sprintf("%.1f%% (free %.1f%%)", pctUsed, pctFree)})
-	o.WriteString(tableKeyValue("Storage (all mounted volumes)", storRows, useColor))
+	o.WriteString(tableKeyValueTw(tw, "Storage (all mounted volumes)", storRows, useColor))
 	o.WriteString("\n")
 	if useColor {
-		o.WriteString("  " + utils.RGBText(140, 180, 255, "Total disk used: ") + rgbBarPct(pctUsed, barW, useColor) + "\n\n")
+		o.WriteString(" " + clrAccent("Disk used (total) ") + rgbBarPct(pctUsed, barW, useColor) + "\n\n")
 	} else {
-		o.WriteString("  Total disk used: " + rgbBarPct(pctUsed, barW, false) + "\n\n")
+		o.WriteString(" Disk used (total) " + rgbBarPct(pctUsed, barW, false) + "\n\n")
 	}
 
 	if len(r.Disks) > 0 {
@@ -389,14 +451,14 @@ func RenderReportText(r *SystemReport, useColor bool) string {
 				fmt.Sprintf("%.1f%%", d.UsedPct),
 			})
 		}
-		o.WriteString(tableMultiHeader("Per-volume breakdown", []string{"Mount", "Medium", "Size", "Used", "Free", "Used%"}, rows, useColor))
+		o.WriteString(tableMultiHeaderTw(tw, "Per-volume breakdown", []string{"Mount", "Medium", "Size", "Used", "Free", "Used%"}, rows, useColor))
 		o.WriteString("\n")
 		for _, d := range r.Disks {
+			lbl := d.Mountpoint
 			if useColor {
-				o.WriteString(fmt.Sprintf("  %s%s%s  %s\n", utils.Green, d.Mountpoint, utils.Reset, rgbBarPct(d.UsedPct, barW, useColor)))
-			} else {
-				o.WriteString(fmt.Sprintf("  %s  %s\n", d.Mountpoint, rgbBarPct(d.UsedPct, barW, false)))
+				lbl = utils.RGBText(120, 255, 180, d.Mountpoint)
 			}
+			o.WriteString(" " + lbl + "  " + rgbBarPct(d.UsedPct, barW, useColor) + "\n")
 		}
 		o.WriteString("\n")
 	}
@@ -406,7 +468,7 @@ func RenderReportText(r *SystemReport, useColor bool) string {
 		for _, t := range r.Thermal {
 			trows = append(trows, [2]string{t.Label, fmt.Sprintf("%.1f °C", t.TempC)})
 		}
-		o.WriteString(tableKeyValue("Thermal sensors", trows, useColor))
+		o.WriteString(tableKeyValueTw(tw, "Thermal sensors", trows, useColor))
 		o.WriteString("\n")
 	}
 
@@ -415,7 +477,7 @@ func RenderReportText(r *SystemReport, useColor bool) string {
 		for _, n := range r.NetIO {
 			rows = append(rows, []string{n.Name, formatBytes(n.Rx), formatBytes(n.Tx), fmt.Sprintf("%d / %d", n.PRx, n.PTx)})
 		}
-		o.WriteString(tableMultiHeader("Network I/O (since boot)", []string{"Iface", "RX", "TX", "Packets rx/tx"}, rows, useColor))
+		o.WriteString(tableMultiHeaderTw(tw, "Network I/O (since boot)", []string{"Iface", "RX", "TX", "Packets rx/tx"}, rows, useColor))
 		o.WriteString("\n")
 	}
 
@@ -424,7 +486,7 @@ func RenderReportText(r *SystemReport, useColor bool) string {
 	runRows = append(runRows, [2]string{"Go runtime", r.GoVersion})
 	runRows = append(runRows, [2]string{"Goroutines (this tool)", fmt.Sprintf("%d", r.Goroutines)})
 	runRows = append(runRows, [2]string{"Processes visible", fmt.Sprintf("%d", r.ProcVis)})
-	o.WriteString(tableKeyValue("Runtime (scanner)", runRows, useColor))
+	o.WriteString(tableKeyValueTw(tw, "Runtime (scanner)", runRows, useColor))
 
 	return o.String()
 }
