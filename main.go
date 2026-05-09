@@ -124,7 +124,8 @@ func HistoryMenu() {
 		fmt.Printf("%s[2]  - View Port Scan Results%s\n", utils.Green, utils.Reset)
 		fmt.Printf("%s[3]  - OSINT History / Statistics%s\n", utils.Green, utils.Reset)
 		fmt.Printf("%s[4]  - View Image Analysis History%s\n", utils.Green, utils.Reset)
-		utils.PrintReturnOption("5")
+		fmt.Printf("%s[5]  - PC system reports (saved exports)%s\n", utils.Green, utils.Reset)
+		utils.PrintReturnOption("6")
 
 		fmt.Printf("\n%sOption: %s", utils.Green, utils.Reset)
 		input, readErr := reader.ReadString('\n')
@@ -144,6 +145,8 @@ func HistoryMenu() {
 		case "4":
 			imganalysis.ViewImageAnalysisHistory()
 		case "5":
+			pcutilities.ViewPCReportHistory()
+		case "6":
 			return
 		default:
 			fmt.Printf("%sInvalid option!%s\n", utils.Yellow, utils.Reset)

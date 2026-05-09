@@ -15,6 +15,7 @@ teste
 image_reports/
 osint_reports/
 target/osint_reports/
+target/pc_reports/
 net_logs/
 
 # IDE and OS files
