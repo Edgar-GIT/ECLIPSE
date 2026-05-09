@@ -14,6 +14,7 @@ teste
 # Report directories
 image_reports/
 osint_reports/
+target/osint_reports/
 net_logs/
 
 # IDE and OS files

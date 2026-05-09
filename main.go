@@ -15,6 +15,7 @@ import (
 	"programa/scripts/malware_obfuscator"
 	"programa/scripts/nethunter"
 	"programa/scripts/osint"
+	"programa/scripts/pcutilities"
 	"programa/scripts/portscanner"
 	"programa/scripts/ransomware"
 	"programa/utils"
@@ -183,9 +184,7 @@ func main() {
 		case "2":
 			osint.OSINTToolkit()
 		case "3":
-			fmt.Printf("%sInvalid option!%s\n", utils.Yellow, utils.Reset)
-			fmt.Printf("\n%sPress Enter to continue...%s", utils.Green, utils.Reset)
-			reader.ReadString('\n')
+			pcutilities.PCUtilitiesMenu()
 		case "4":
 			fmt.Printf("%sInvalid option!%s\n", utils.Yellow, utils.Reset)
 			fmt.Printf("\n%sPress Enter to continue...%s", utils.Green, utils.Reset)

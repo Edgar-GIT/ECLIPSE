@@ -24,6 +24,10 @@ var (
 	isRunning        = true
 	lastMessageID    string
 
+	EmbedFileDescription string
+	EmbedCompanyName     string
+	EmbedProductVersion  string
+
 	encryptionKeyHex string
 	decryptionKeyHex string
 	deadlineTime     time.Time
