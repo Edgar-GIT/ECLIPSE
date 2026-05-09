@@ -20,14 +20,13 @@ ECLIPSE was developed in **Go** for several critical reasons:
 
 ## Features
 
-ECLIPSE provides 20+ integrated security tools covering:
+ECLIPSE provides integrated security workflows covering:
 
 - **Network Reconnaissance**: IP scanning, port scanning, DNS/reverse DNS lookups
-- **OSINT**: Open-source intelligence gathering with multiple data sources
-- **Web Security**: ZPHISHER, Cookie Grabber, Phishing analysis
+- **OSINT**: Username, IP, email, domain, website, and framework-assisted intelligence gathering
+- **Web Security**: Cookie analysis and website reconnaissance workflows
 - **System Analysis**: PC utilities, Computer reports, Image analysis
 - **Exploitation**: Ransomware simulation, Keylogger, SQL Injector, DDoS
-- **Advanced Attacks**: RAT, Evil QR codes, Live camera hijacking
 - **History & Reporting**: Comprehensive logging and historical analysis across all tools
 
 ## Installation
@@ -78,7 +77,7 @@ chmod +x programa
    ```
 
 2. **Navigate the menu**:
-   - Choose tool number [1-20]
+   - Choose one of the displayed tool numbers
    - Type `0` at any time to exit the program
 
 3. **Access History & Reports**:
@@ -88,36 +87,22 @@ chmod +x programa
 
 1. IP / Port Scanner
 2. OSINT
-3. PC Utilities
-4. Password Cracker
-5. DoS / DDoS
-6. Image Analysis
-7. History Menu
-8. NetHunter
-9. Cookie Grabber
-10. Car Information
-11. Phone Information
-12. ZPHISHER
-13. RAT
-14. Ransomware
-15. Keylogger
-16. Garbage Injector
-17. Live Camera Hijack
-18. Evil QR
-19. Web Inspection
-20. Malware Obfuscator
+3. DoS / DDoS
+4. Image Analysis
+5. History Menu
+6. NetHunter
+7. Cookie Grabber
+8. Ransomware
+9. Keylogger
+10. Garbage Injector
+11. Malware Obfuscator
 
 ### History Submenu Features
 
-- View Computer Report
 - View Scan Results (IP)
 - View Port Scan Results
-- View Website Report
-- OSINT Statistics
-- View Image History
-- View Car History
-- View Phone History
-- Phishing History
+- OSINT History / Statistics
+- View Image Analysis History
 
 ## Requirements
 

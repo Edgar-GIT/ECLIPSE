@@ -91,8 +91,11 @@ func ScannerMenu() {
 		utils.PrintReturnOption("3")
 
 		fmt.Printf("\n%sOption: %s", utils.Green, utils.Reset)
-		input, _ := reader.ReadString('\n')
+		input, readErr := reader.ReadString('\n')
 		input = strings.TrimSpace(input)
+		if readErr != nil && input == "" {
+			return
+		}
 
 		switch input {
 		case "1":
@@ -116,55 +119,30 @@ func HistoryMenu() {
 		utils.ClearTerminal()
 		fmt.Printf("\n%s============ HISTORY MENU ============%s\n\n", utils.Blue, utils.Reset)
 
-		fmt.Printf("%s[1]  - View Computer Report%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[2]  - View Scan Results (IP)%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[3]  - View Port Scan Results%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[4]  - View Website Report%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[5]  - OSINT Statistics%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[6]  - View Image History%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[7]  - View Car History%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[8]  - View Phone History%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[9]  - Phishing History%s\n", utils.Green, utils.Reset)
-		utils.PrintReturnOption("10")
+		fmt.Printf("%s[1]  - View IP Scan Results%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[2]  - View Port Scan Results%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[3]  - OSINT History / Statistics%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[4]  - View Image Analysis History%s\n", utils.Green, utils.Reset)
+		utils.PrintReturnOption("5")
 
 		fmt.Printf("\n%sOption: %s", utils.Green, utils.Reset)
-		input, _ := reader.ReadString('\n')
+		input, readErr := reader.ReadString('\n')
 		input = strings.TrimSpace(input)
+		if readErr != nil && input == "" {
+			return
+		}
 
 		switch input {
 		case "1":
-			fmt.Printf("%s[*] View Computer Report - Feature coming soon%s\n\n", utils.Yellow, utils.Reset)
-			fmt.Printf("%sPress Enter to continue...%s", utils.Green, utils.Reset)
-			reader.ReadString('\n')
-		case "2":
 			ipscanner.ViewScanResults()
-		case "3":
+		case "2":
 			portscanner.ViewPortScanResults()
+		case "3":
+			osint.ViewOSINTStats()
+			utils.WaitForEnter(reader)
 		case "4":
-			fmt.Printf("%s[*] View Website Report - Feature coming soon%s\n\n", utils.Yellow, utils.Reset)
-			fmt.Printf("%sPress Enter to continue...%s", utils.Green, utils.Reset)
-			reader.ReadString('\n')
+			imganalysis.ViewImageAnalysisHistory()
 		case "5":
-			fmt.Printf("%s[*] OSINT Statistics - Feature coming soon%s\n\n", utils.Yellow, utils.Reset)
-			fmt.Printf("%sPress Enter to continue...%s", utils.Green, utils.Reset)
-			reader.ReadString('\n')
-		case "6":
-			fmt.Printf("%s[*] View Image History - Feature coming soon%s\n\n", utils.Yellow, utils.Reset)
-			fmt.Printf("%sPress Enter to continue...%s", utils.Green, utils.Reset)
-			reader.ReadString('\n')
-		case "7":
-			fmt.Printf("%s[*] View Car History - Feature coming soon%s\n\n", utils.Yellow, utils.Reset)
-			fmt.Printf("%sPress Enter to continue...%s", utils.Green, utils.Reset)
-			reader.ReadString('\n')
-		case "8":
-			fmt.Printf("%s[*] View Phone History - Feature coming soon%s\n\n", utils.Yellow, utils.Reset)
-			fmt.Printf("%sPress Enter to continue...%s", utils.Green, utils.Reset)
-			reader.ReadString('\n')
-		case "9":
-			fmt.Printf("%s[*] Phishing History - Feature coming soon%s\n\n", utils.Yellow, utils.Reset)
-			fmt.Printf("%sPress Enter to continue...%s", utils.Green, utils.Reset)
-			reader.ReadString('\n')
-		case "10":
 			return
 		default:
 			fmt.Printf("%sInvalid option!%s\n", utils.Yellow, utils.Reset)
@@ -187,8 +165,12 @@ func main() {
 		Menu()
 
 		fmt.Printf("%sChoose a Tool (write 0 to exit): %s", utils.Green, utils.Reset)
-		input, _ := reader.ReadString('\n')
+		input, readErr := reader.ReadString('\n')
 		input = strings.TrimSpace(input)
+		if readErr != nil && input == "" {
+			fmt.Printf("%sLeaving... Stay Ethical!!%s\n", utils.Yellow, utils.Reset)
+			return
+		}
 
 		if input == "0" {
 			fmt.Printf("%sLeaving... Stay Ethical!!%s\n", utils.Yellow, utils.Reset)
@@ -200,6 +182,14 @@ func main() {
 			ScannerMenu()
 		case "2":
 			osint.OSINTToolkit()
+		case "3":
+			fmt.Printf("%sInvalid option!%s\n", utils.Yellow, utils.Reset)
+			fmt.Printf("\n%sPress Enter to continue...%s", utils.Green, utils.Reset)
+			reader.ReadString('\n')
+		case "4":
+			fmt.Printf("%sInvalid option!%s\n", utils.Yellow, utils.Reset)
+			fmt.Printf("\n%sPress Enter to continue...%s", utils.Green, utils.Reset)
+			reader.ReadString('\n')
 		case "5":
 			dos.DoSMenu()
 		case "6":
@@ -210,12 +200,40 @@ func main() {
 			nethunter.NetHunter()
 		case "9":
 			cookies.CookieToolMenu()
+		case "10":
+			fmt.Printf("%sInvalid option!%s\n", utils.Yellow, utils.Reset)
+			fmt.Printf("\n%sPress Enter to continue...%s", utils.Green, utils.Reset)
+			reader.ReadString('\n')
+		case "11":
+			fmt.Printf("%sInvalid option!%s\n", utils.Yellow, utils.Reset)
+			fmt.Printf("\n%sPress Enter to continue...%s", utils.Green, utils.Reset)
+			reader.ReadString('\n')
+		case "12":
+			fmt.Printf("%sInvalid option!%s\n", utils.Yellow, utils.Reset)
+			fmt.Printf("\n%sPress Enter to continue...%s", utils.Green, utils.Reset)
+			reader.ReadString('\n')
+		case "13":
+			fmt.Printf("%sInvalid option!%s\n", utils.Yellow, utils.Reset)
+			fmt.Printf("\n%sPress Enter to continue...%s", utils.Green, utils.Reset)
+			reader.ReadString('\n')
 		case "14":
 			ransomware.LaunchRansomware()
 		case "15":
 			keylogger.LaunchKeylogger()
 		case "16":
 			garbageinjector.GarbageInjector()
+		case "17":
+			fmt.Printf("%sInvalid option!%s\n", utils.Yellow, utils.Reset)
+			fmt.Printf("\n%sPress Enter to continue...%s", utils.Green, utils.Reset)
+			reader.ReadString('\n')
+		case "18":
+			fmt.Printf("%sInvalid option!%s\n", utils.Yellow, utils.Reset)
+			fmt.Printf("\n%sPress Enter to continue...%s", utils.Green, utils.Reset)
+			reader.ReadString('\n')
+		case "19":
+			fmt.Printf("%sInvalid option!%s\n", utils.Yellow, utils.Reset)
+			fmt.Printf("\n%sPress Enter to continue...%s", utils.Green, utils.Reset)
+			reader.ReadString('\n')
 		case "20":
 			malware_obfuscator.MalwareObfuscatorMenu()
 		default:

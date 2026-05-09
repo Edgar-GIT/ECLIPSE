@@ -19,8 +19,11 @@ func LaunchKeylogger() {
 
 		reader := bufio.NewReader(os.Stdin)
 		fmt.Printf("%sChoose an option: %s", utils.Green, utils.Reset)
-		input, _ := reader.ReadString('\n')
+		input, readErr := reader.ReadString('\n')
 		input = strings.TrimSpace(input)
+		if readErr != nil && input == "" {
+			return
+		}
 
 		switch input {
 		case "1":

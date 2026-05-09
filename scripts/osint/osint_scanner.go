@@ -3,13 +3,13 @@ package osint
 import (
 	"bufio"
 	"bytes"
-	"encoding/csv"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -50,230 +51,424 @@ type OSINTStats struct {
 }
 
 const (
-	osintResultsFile = "target/osint_results.json"
-	osintReportsDir  = "target/osint_reports"
-	osintAPIKeysFile = "target/osint_api_keys.json"
-	osintToolsDir    = "target/osint_tools"
+	osintResultsFile    = "target/osint_results.json"
+	osintReportsDir     = "target/osint_reports"
+	osintAPIKeysFile    = "target/osint_api_keys.json"
+	osintToolsDir       = "exec_tools"
+	legacyOSINTToolsDir = "target/osint_tools"
 )
 
 var apiKeyHelpLinks = map[string]string{
 	"SHODAN_API_KEY": "https://account.shodan.io/",
-	"HIBP_API_KEY":   "https://haveibeenpwned.com/API/Key",
 }
 
 func OSINTToolkit() {
-	utils.ClearTerminal()
-	fmt.Printf("\n%s=== OSINT TOOLKIT ===%s\n\n", utils.Blue, utils.Reset)
-	fmt.Printf("%sUse only on authorized targets and lawful investigations.%s\n\n", utils.Yellow, utils.Reset)
-
 	reader := bufio.NewReader(os.Stdin)
 	loadStoredAPIKeysIntoEnv()
+	ensureExecToolsDir()
 
 	for {
-		fmt.Printf("%s[1]  Whois lookup (domain/IP)%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[2]  DNS recon (A/AAAA/MX/TXT/NS)%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[3]  TheHarvester (domain)%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[4]  Subdomain enum (subfinder/assetfinder/amass)%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[5]  Shodan host lookup (CLI)%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[6]  Shodan InternetDB (no API key)%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[7]  Sherlock username check%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[8]  Recon-ng quick module run%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[9]  SpiderFoot quick scan%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[10] Have I Been Pwned (email)%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[11] Maltego seed file (CSV)%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[12] SocialEye.net lookup%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[13] Maigret web lookup%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[14] API Key Manager%s\n", utils.Blue, utils.Reset)
-		utils.PrintReturnOption("15")
+		utils.ClearTerminal()
+		printOSINTHeader("OSINT Toolkit")
+		fmt.Printf("%s[1] Username / handle intelligence%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[2] IP address / infrastructure%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[3] Email address intelligence%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[4] Domain / website intelligence%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[5] Full OSINT frameworks%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[6] API key manager%s\n", utils.Blue, utils.Reset)
+		fmt.Printf("%s[7] History and statistics%s\n", utils.Blue, utils.Reset)
+		fmt.Printf("%s[8] Tool setup and status%s\n", utils.Blue, utils.Reset)
+		fmt.Printf("%s[9] Return to main menu%s\n", utils.Yellow, utils.Reset)
 		fmt.Printf("\n%sOption: %s", utils.Green, utils.Reset)
 
-		input, _ := reader.ReadString('\n')
-		input = strings.TrimSpace(input)
+		input, ok := readMenuInput(reader)
+		if !ok {
+			return
+		}
 
 		switch input {
 		case "1":
-			if !ensureDependenciesForOSINTOption(reader, "1") {
-				utils.WaitForEnter(reader)
-				return
-			}
-			target := askTarget(reader, "Target (domain or IP)")
-			if target == "" {
-				fmt.Printf("%sTarget is required.%s\n", utils.Red, utils.Reset)
-				utils.WaitForEnter(reader)
-				return
-			}
-			runOSINTCommand("whois", target, "whois", []string{target})
-			utils.WaitForEnter(reader)
-			return
+			usernameOSINTMenu(reader)
 		case "2":
-			if !ensureDependenciesForOSINTOption(reader, "2") {
-				utils.WaitForEnter(reader)
-				return
-			}
-			target := askTarget(reader, "Domain for DNS recon")
-			if !isLikelyDomain(target) {
-				fmt.Printf("%sInvalid domain format.%s\n", utils.Red, utils.Reset)
-				utils.WaitForEnter(reader)
-				return
-			}
-			runDNSRecon(target)
-			utils.WaitForEnter(reader)
-			return
+			ipOSINTMenu(reader)
 		case "3":
-			if !ensureDependenciesForOSINTOption(reader, "3") {
-				utils.WaitForEnter(reader)
-				return
-			}
-			target := askTarget(reader, "Domain for TheHarvester")
-			if !isLikelyDomain(target) {
-				fmt.Printf("%sInvalid domain format.%s\n", utils.Red, utils.Reset)
-				utils.WaitForEnter(reader)
-				return
-			}
-			runTheHarvester(target)
-			utils.WaitForEnter(reader)
-			return
+			emailOSINTMenu(reader)
 		case "4":
-			if !ensureDependenciesForOSINTOption(reader, "4") {
-				utils.WaitForEnter(reader)
-				return
-			}
-			target := askTarget(reader, "Domain for subdomain enum")
-			if !isLikelyDomain(target) {
-				fmt.Printf("%sInvalid domain format.%s\n", utils.Red, utils.Reset)
-				utils.WaitForEnter(reader)
-				return
-			}
-			runSubdomainEnum(target)
-			utils.WaitForEnter(reader)
-			return
+			domainOSINTMenu(reader)
 		case "5":
-			if !ensureAPIKeysForOption(reader, "5") {
-				utils.WaitForEnter(reader)
-				return
-			}
-			if !ensureDependenciesForOSINTOption(reader, "5") {
-				utils.WaitForEnter(reader)
-				return
-			}
-			ensureShodanCLIConfigured()
-			target := askTarget(reader, "IP for Shodan host lookup")
-			if !utils.IsValidIPv4(target) {
-				fmt.Printf("%sInvalid IPv4 format.%s\n", utils.Red, utils.Reset)
-				utils.WaitForEnter(reader)
-				return
-			}
-			runOSINTCommand("shodan-cli", target, "shodan", []string{"host", target})
-			utils.WaitForEnter(reader)
-			return
+			frameworksOSINTMenu(reader)
 		case "6":
-			target := askTarget(reader, "IP for InternetDB")
-			if !utils.IsValidIPv4(target) {
-				fmt.Printf("%sInvalid IPv4 format.%s\n", utils.Red, utils.Reset)
-				utils.WaitForEnter(reader)
-				return
-			}
-			runShodanInternetDB(target)
-			utils.WaitForEnter(reader)
-			return
-		case "7":
-			if !ensureDependenciesForOSINTOption(reader, "7") {
-				utils.WaitForEnter(reader)
-				return
-			}
-			target := askTarget(reader, "Username for Sherlock")
-			if target == "" {
-				fmt.Printf("%sUsername is required.%s\n", utils.Red, utils.Reset)
-				utils.WaitForEnter(reader)
-				return
-			}
-			runOSINTCommand("sherlock", target, "sherlock", []string{"--print-found", target})
-			utils.WaitForEnter(reader)
-			return
-		case "8":
-			target := askTarget(reader, "Domain for Recon-ng")
-			if !isLikelyDomain(target) {
-				fmt.Printf("%sInvalid domain format.%s\n", utils.Red, utils.Reset)
-				utils.WaitForEnter(reader)
-				return
-			}
-			runReconNG(target)
-			utils.WaitForEnter(reader)
-			return
-		case "9":
-			target := askTarget(reader, "Domain/IP for SpiderFoot")
-			if target == "" {
-				fmt.Printf("%sTarget is required.%s\n", utils.Red, utils.Reset)
-				utils.WaitForEnter(reader)
-				return
-			}
-			runSpiderFootScan(target)
-			utils.WaitForEnter(reader)
-			return
-		case "10":
-			if !ensureAPIKeysForOption(reader, "10") {
-				utils.WaitForEnter(reader)
-				return
-			}
-			target := askTarget(reader, "Email for HIBP")
-			if !isLikelyEmail(target) {
-				fmt.Printf("%sInvalid email format.%s\n", utils.Red, utils.Reset)
-				utils.WaitForEnter(reader)
-				return
-			}
-			runHIBPCheck(target)
-			utils.WaitForEnter(reader)
-			return
-		case "11":
-			target := askTarget(reader, "Target for Maltego seed (domain/email/IP)")
-			if target == "" {
-				fmt.Printf("%sTarget is required.%s\n", utils.Red, utils.Reset)
-				utils.WaitForEnter(reader)
-				return
-			}
-			createMaltegoSeed(target)
-			utils.WaitForEnter(reader)
-			return
-		case "12":
-			target := askTarget(reader, "Target for SocialEye (username/email/name)")
-			if target == "" {
-				fmt.Printf("%sTarget is required.%s\n", utils.Red, utils.Reset)
-				utils.WaitForEnter(reader)
-				return
-			}
-			runSocialEyeLookup(target)
-			utils.WaitForEnter(reader)
-			return
-		case "13":
-			if !ensureDependenciesForOSINTOption(reader, "13") {
-				utils.WaitForEnter(reader)
-				return
-			}
-			target := askTarget(reader, "Username for Maigret")
-			if target == "" {
-				fmt.Printf("%sUsername is required.%s\n", utils.Red, utils.Reset)
-				utils.WaitForEnter(reader)
-				return
-			}
-			runMaigretLookup(reader, target)
-			utils.WaitForEnter(reader)
-			return
-		case "14":
 			manageAPIKeys(reader)
 			utils.WaitForEnter(reader)
-			return
-		case "15":
+		case "7":
+			ViewOSINTStats()
+			utils.WaitForEnter(reader)
+		case "8":
+			setupOSINTToolsMenu(reader)
+		case "9":
 			return
 		default:
 			fmt.Printf("%sInvalid option!%s\n\n", utils.Red, utils.Reset)
+			utils.WaitForEnter(reader)
 		}
 	}
+}
+
+func printOSINTHeader(title string) {
+	fmt.Printf("\n%s=== %s ===%s\n\n", utils.Blue, strings.ToUpper(title), utils.Reset)
+	fmt.Printf("%sUse only on authorized targets and lawful investigations.%s\n\n", utils.Yellow, utils.Reset)
+}
+
+func usernameOSINTMenu(reader *bufio.Reader) {
+	for {
+		utils.ClearTerminal()
+		printOSINTHeader("Username Intelligence")
+		fmt.Printf("%s[1] Sherlock username check%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[2] Maigret profile lookup%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[3] Back%s\n", utils.Yellow, utils.Reset)
+		fmt.Printf("\n%sOption: %s", utils.Green, utils.Reset)
+		input, ok := readMenuInput(reader)
+		if !ok {
+			return
+		}
+
+		switch input {
+		case "1":
+			if !ensurePythonPackageToolReady(reader, "sherlock", "sherlock-project") {
+				utils.WaitForEnter(reader)
+				continue
+			}
+			target := askTarget(reader, "Username")
+			if target == "" {
+				fmt.Printf("%sUsername is required.%s\n", utils.Red, utils.Reset)
+				utils.WaitForEnter(reader)
+				continue
+			}
+			runOSINTCommand("sherlock", target, "sherlock", []string{"--print-found", target})
+			utils.WaitForEnter(reader)
+		case "2":
+			if !ensureLocalOrGlobalToolReady(reader, "maigret") {
+				utils.WaitForEnter(reader)
+				continue
+			}
+			target := askTarget(reader, "Username")
+			if target == "" {
+				fmt.Printf("%sUsername is required.%s\n", utils.Red, utils.Reset)
+				utils.WaitForEnter(reader)
+				continue
+			}
+			runMaigretLookup(target)
+			utils.WaitForEnter(reader)
+		case "3":
+			return
+		default:
+			fmt.Printf("%sInvalid option.%s\n", utils.Red, utils.Reset)
+			utils.WaitForEnter(reader)
+		}
+	}
+}
+
+func ipOSINTMenu(reader *bufio.Reader) {
+	for {
+		utils.ClearTerminal()
+		printOSINTHeader("IP Intelligence")
+		fmt.Printf("%s[1] Reverse DNS and web finder%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[2] Shodan InternetDB (no API key)%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[3] Shodan host lookup (CLI/API key)%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[4] Whois lookup%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[5] Back%s\n", utils.Yellow, utils.Reset)
+		fmt.Printf("\n%sOption: %s", utils.Green, utils.Reset)
+		input, ok := readMenuInput(reader)
+		if !ok {
+			return
+		}
+
+		switch input {
+		case "1":
+			target := askTarget(reader, "IPv4 address")
+			if !utils.IsValidIPv4(target) {
+				fmt.Printf("%sInvalid IPv4 format.%s\n", utils.Red, utils.Reset)
+				utils.WaitForEnter(reader)
+				continue
+			}
+			runIPWebFinder(target)
+			utils.WaitForEnter(reader)
+		case "2":
+			target := askTarget(reader, "IPv4 address")
+			if !utils.IsValidIPv4(target) {
+				fmt.Printf("%sInvalid IPv4 format.%s\n", utils.Red, utils.Reset)
+				utils.WaitForEnter(reader)
+				continue
+			}
+			runShodanInternetDB(target)
+			utils.WaitForEnter(reader)
+		case "3":
+			if !ensureAPIKeysForOption(reader, "shodan-cli") || !ensurePythonPackageToolReady(reader, "shodan", "shodan") {
+				utils.WaitForEnter(reader)
+				continue
+			}
+			ensureShodanCLIConfigured()
+			target := askTarget(reader, "IPv4 address")
+			if !utils.IsValidIPv4(target) {
+				fmt.Printf("%sInvalid IPv4 format.%s\n", utils.Red, utils.Reset)
+				utils.WaitForEnter(reader)
+				continue
+			}
+			runOSINTCommand("shodan-cli", target, "shodan", []string{"host", target})
+			utils.WaitForEnter(reader)
+		case "4":
+			if !ensureDependenciesForOSINTOption(reader, "whois") {
+				utils.WaitForEnter(reader)
+				continue
+			}
+			target := askTarget(reader, "Domain or IP")
+			if target == "" {
+				fmt.Printf("%sTarget is required.%s\n", utils.Red, utils.Reset)
+				utils.WaitForEnter(reader)
+				continue
+			}
+			runOSINTCommand("whois", target, "whois", []string{target})
+			utils.WaitForEnter(reader)
+		case "5":
+			return
+		default:
+			fmt.Printf("%sInvalid option.%s\n", utils.Red, utils.Reset)
+			utils.WaitForEnter(reader)
+		}
+	}
+}
+
+func emailOSINTMenu(reader *bufio.Reader) {
+	for {
+		utils.ClearTerminal()
+		printOSINTHeader("Email Intelligence")
+		fmt.Printf("%s[1] Mail domain footprint (MX/SPF/DMARC/NS)%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[2] Back%s\n", utils.Yellow, utils.Reset)
+		fmt.Printf("\n%sOption: %s", utils.Green, utils.Reset)
+		input, ok := readMenuInput(reader)
+		if !ok {
+			return
+		}
+
+		switch input {
+		case "1":
+			target := askTarget(reader, "Email address")
+			if !isLikelyEmail(target) {
+				fmt.Printf("%sInvalid email format.%s\n", utils.Red, utils.Reset)
+				utils.WaitForEnter(reader)
+				continue
+			}
+			runEmailDomainFootprint(target)
+			utils.WaitForEnter(reader)
+		case "2":
+			return
+		default:
+			fmt.Printf("%sInvalid option.%s\n", utils.Red, utils.Reset)
+			utils.WaitForEnter(reader)
+		}
+	}
+}
+
+func domainOSINTMenu(reader *bufio.Reader) {
+	for {
+		utils.ClearTerminal()
+		printOSINTHeader("Domain and Website Intelligence")
+		fmt.Printf("%s[1] DNS records (A/AAAA/MX/TXT/NS/PTR)%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[2] Website finder and IP mapping%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[3] Passive subdomain enum%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[4] TheHarvester domain recon%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[5] Whois lookup%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[6] Back%s\n", utils.Yellow, utils.Reset)
+		fmt.Printf("\n%sOption: %s", utils.Green, utils.Reset)
+		input, ok := readMenuInput(reader)
+		if !ok {
+			return
+		}
+
+		switch input {
+		case "1":
+			if !ensureDependenciesForOSINTOption(reader, "dns") {
+				utils.WaitForEnter(reader)
+				continue
+			}
+			target := askDomainTarget(reader)
+			if target == "" {
+				utils.WaitForEnter(reader)
+				continue
+			}
+			runDNSRecon(target)
+			utils.WaitForEnter(reader)
+		case "2":
+			target := askDomainTarget(reader)
+			if target == "" {
+				utils.WaitForEnter(reader)
+				continue
+			}
+			runDomainWebFinder(target)
+			utils.WaitForEnter(reader)
+		case "3":
+			if !ensureSubdomainToolReady(reader) {
+				utils.WaitForEnter(reader)
+				continue
+			}
+			target := askDomainTarget(reader)
+			if target == "" {
+				utils.WaitForEnter(reader)
+				continue
+			}
+			runSubdomainEnum(target)
+			utils.WaitForEnter(reader)
+		case "4":
+			if !ensureLocalOrGlobalToolReady(reader, "theharvester") {
+				utils.WaitForEnter(reader)
+				continue
+			}
+			target := askDomainTarget(reader)
+			if target == "" {
+				utils.WaitForEnter(reader)
+				continue
+			}
+			runTheHarvester(target)
+			utils.WaitForEnter(reader)
+		case "5":
+			if !ensureDependenciesForOSINTOption(reader, "whois") {
+				utils.WaitForEnter(reader)
+				continue
+			}
+			target := askDomainTarget(reader)
+			if target == "" {
+				utils.WaitForEnter(reader)
+				continue
+			}
+			runOSINTCommand("whois", target, "whois", []string{target})
+			utils.WaitForEnter(reader)
+		case "6":
+			return
+		default:
+			fmt.Printf("%sInvalid option.%s\n", utils.Red, utils.Reset)
+			utils.WaitForEnter(reader)
+		}
+	}
+}
+
+func frameworksOSINTMenu(reader *bufio.Reader) {
+	for {
+		utils.ClearTerminal()
+		printOSINTHeader("Full OSINT Frameworks")
+		fmt.Printf("%s[1] Recon-ng quick module run%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[2] SpiderFoot quick scan%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[3] Maigret username lookup%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[4] Back%s\n", utils.Yellow, utils.Reset)
+		fmt.Printf("\n%sOption: %s", utils.Green, utils.Reset)
+		input, ok := readMenuInput(reader)
+		if !ok {
+			return
+		}
+
+		switch input {
+		case "1":
+			if !ensureLocalOrGlobalToolReady(reader, "recon-ng") {
+				utils.WaitForEnter(reader)
+				continue
+			}
+			target := askDomainTarget(reader)
+			if target == "" {
+				utils.WaitForEnter(reader)
+				continue
+			}
+			runReconNG(target)
+			utils.WaitForEnter(reader)
+		case "2":
+			if !ensureLocalOrGlobalToolReady(reader, "spiderfoot") {
+				utils.WaitForEnter(reader)
+				continue
+			}
+			target := askTarget(reader, "Domain or IP")
+			if target == "" {
+				fmt.Printf("%sTarget is required.%s\n", utils.Red, utils.Reset)
+				utils.WaitForEnter(reader)
+				continue
+			}
+			runSpiderFootScan(target)
+			utils.WaitForEnter(reader)
+		case "3":
+			if !ensureLocalOrGlobalToolReady(reader, "maigret") {
+				utils.WaitForEnter(reader)
+				continue
+			}
+			target := askTarget(reader, "Username")
+			if target == "" {
+				fmt.Printf("%sUsername is required.%s\n", utils.Red, utils.Reset)
+				utils.WaitForEnter(reader)
+				continue
+			}
+			runMaigretLookup(target)
+			utils.WaitForEnter(reader)
+		case "4":
+			return
+		default:
+			fmt.Printf("%sInvalid option.%s\n", utils.Red, utils.Reset)
+			utils.WaitForEnter(reader)
+		}
+	}
+}
+
+func setupOSINTToolsMenu(reader *bufio.Reader) {
+	for {
+		utils.ClearTerminal()
+		printOSINTHeader("Tool Setup and Status")
+		printOSINTToolStatus()
+		fmt.Printf("\n%s[1] Prepare missing local repos in exec_tools%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[2] Install Sherlock CLI with pip --user%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[3] Install Shodan CLI with pip --user%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[4] Back%s\n", utils.Yellow, utils.Reset)
+		fmt.Printf("\n%sOption: %s", utils.Green, utils.Reset)
+		input, ok := readMenuInput(reader)
+		if !ok {
+			return
+		}
+
+		switch input {
+		case "1":
+			setupRecommendedLocalTools(reader)
+			utils.WaitForEnter(reader)
+		case "2":
+			ensurePythonPackageToolReady(reader, "sherlock", "sherlock-project")
+			utils.WaitForEnter(reader)
+		case "3":
+			ensurePythonPackageToolReady(reader, "shodan", "shodan")
+			utils.WaitForEnter(reader)
+		case "4":
+			return
+		default:
+			fmt.Printf("%sInvalid option.%s\n", utils.Red, utils.Reset)
+			utils.WaitForEnter(reader)
+		}
+	}
+}
+
+func askDomainTarget(reader *bufio.Reader) string {
+	target := askTarget(reader, "Domain")
+	if !isLikelyDomain(target) {
+		fmt.Printf("%sInvalid domain format.%s\n", utils.Red, utils.Reset)
+		return ""
+	}
+	return target
 }
 
 func askTarget(reader *bufio.Reader, label string) string {
 	fmt.Printf("%s%s: %s", utils.Green, label, utils.Reset)
 	val, _ := reader.ReadString('\n')
 	return strings.TrimSpace(val)
+}
+
+func readMenuInput(reader *bufio.Reader) (string, bool) {
+	val, err := reader.ReadString('\n')
+	val = strings.TrimSpace(val)
+	if err != nil && val == "" {
+		return "", false
+	}
+	return val, true
 }
 
 func runDNSRecon(target string) {
@@ -307,7 +502,7 @@ func runSubdomainEnum(target string) {
 	}
 }
 
-func runMaigretLookup(reader *bufio.Reader, target string) {
+func runMaigretLookup(target string) {
 	args := []string{target, "-a", "--html"}
 
 	if isToolInstalled("maigret") {
@@ -317,13 +512,7 @@ func runMaigretLookup(reader *bufio.Reader, target string) {
 
 	repoPath := filepath.Join(osintToolsDir, "maigret")
 	if dirExists(repoPath) {
-		fmt.Printf("%sMaigret is not installed globally. Create a temporary isolated env from the local repo for this run only? (y/N): %s", utils.Yellow, utils.Reset)
-		answer, _ := reader.ReadString('\n')
-		answer = strings.TrimSpace(strings.ToLower(answer))
-		if answer == "y" || answer == "yes" {
-			if err := runTempRepoPythonModuleCommand("maigret", target, repoPath, "maigret", args); err != nil {
-				recordAndPrintError("maigret", target, fmt.Sprintf("Failed to run temporary Maigret environment: %v", err), time.Now())
-			}
+		if runLocalPythonModuleCommand("maigret", target, repoPath, "maigret", args) {
 			return
 		}
 	}
@@ -394,8 +583,9 @@ func runSpiderFootScan(target string) {
 
 func runShodanInternetDB(ip string) {
 	start := time.Now()
-	url := "https://internetdb.shodan.io/" + ip
-	resp, err := http.Get(url)
+	endpoint := "https://internetdb.shodan.io/" + ip
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Get(endpoint)
 	if err != nil {
 		msg := fmt.Sprintf("InternetDB request failed: %v", err)
 		recordAndPrintError("shodan-internetdb", ip, msg, start)
@@ -430,244 +620,356 @@ func runShodanInternetDB(ip string) {
 	fmt.Printf("%sSaved InternetDB result to %s%s\n", utils.Green, outFile, utils.Reset)
 }
 
-func runSocialEyeLookup(target string) {
+type webProbeResult struct {
+	URL        string
+	FinalURL   string
+	Status     string
+	StatusCode int
+	Server     string
+	Title      string
+	TLSNames   []string
+	Error      string
+}
+
+func runIPWebFinder(ip string) {
 	start := time.Now()
-	escaped := url.QueryEscape(target)
-	candidates := []string{
-		"https://socialeye.net/search?q=" + escaped,
-		"https://socialeye.net/?s=" + escaped,
-		"https://socialeye.net/",
+	var report strings.Builder
+	report.WriteString("REVERSE DNS AND WEB FINDER\n")
+	report.WriteString("Target IP: " + ip + "\n")
+	report.WriteString("Started: " + time.Now().Format("2006-01-02 15:04:05") + "\n\n")
+
+	ptrs, err := net.LookupAddr(ip)
+	if err != nil {
+		report.WriteString("Reverse DNS: no PTR records found (" + err.Error() + ")\n")
+	} else {
+		ptrs = normalizeHostnames(ptrs)
+		report.WriteString("Reverse DNS records:\n")
+		for _, ptr := range ptrs {
+			report.WriteString("- " + ptr + "\n")
+		}
 	}
 
-	client := &http.Client{Timeout: 15 * time.Second}
-	var body []byte
-	var selectedURL string
-	var statusCode int
-	var lastErr error
+	candidates := buildIPWebCandidates(ip, ptrs)
+	results := probeWebTargets(candidates, 7*time.Second)
+	writeWebProbeResults(&report, results)
+	saveWebFinderResult("reverse-web-finder", ip, report.String(), start, results)
+}
 
-	for _, endpoint := range candidates {
-		req, err := http.NewRequest("GET", endpoint, nil)
-		if err != nil {
-			lastErr = err
+func runDomainWebFinder(domain string) {
+	start := time.Now()
+	var report strings.Builder
+	report.WriteString("DOMAIN WEBSITE AND IP MAPPING\n")
+	report.WriteString("Target domain: " + domain + "\n")
+	report.WriteString("Started: " + time.Now().Format("2006-01-02 15:04:05") + "\n\n")
+
+	if cname, err := net.LookupCNAME(domain); err == nil && strings.TrimSuffix(cname, ".") != domain {
+		report.WriteString("CNAME: " + strings.TrimSuffix(cname, ".") + "\n")
+	}
+
+	ips, err := net.LookupIP(domain)
+	ipStrings := make([]string, 0, len(ips))
+	if err != nil {
+		report.WriteString("IP resolution: failed (" + err.Error() + ")\n")
+	} else {
+		report.WriteString("Resolved IP addresses:\n")
+		for _, ip := range ips {
+			ipText := ip.String()
+			ipStrings = append(ipStrings, ipText)
+			report.WriteString("- " + ipText + "\n")
+		}
+	}
+
+	if len(ipStrings) > 0 {
+		report.WriteString("\nReverse DNS for resolved IPs:\n")
+		for _, ip := range ipStrings {
+			ptrs, ptrErr := net.LookupAddr(ip)
+			if ptrErr != nil {
+				report.WriteString("- " + ip + ": none\n")
+				continue
+			}
+			report.WriteString("- " + ip + ": " + strings.Join(normalizeHostnames(ptrs), ", ") + "\n")
+		}
+	}
+
+	candidates := buildDomainWebCandidates(domain, ipStrings)
+	results := probeWebTargets(candidates, 7*time.Second)
+	writeWebProbeResults(&report, results)
+	saveWebFinderResult("domain-web-finder", domain, report.String(), start, results)
+}
+
+func runEmailDomainFootprint(email string) {
+	start := time.Now()
+	parts := strings.Split(strings.TrimSpace(email), "@")
+	if len(parts) != 2 || !isLikelyDomain(parts[1]) {
+		recordAndPrintError("email-domain-footprint", email, "Invalid email domain.", start)
+		return
+	}
+	domain := strings.ToLower(parts[1])
+
+	var report strings.Builder
+	report.WriteString("EMAIL DOMAIN FOOTPRINT\n")
+	report.WriteString("Email: " + email + "\n")
+	report.WriteString("Domain: " + domain + "\n")
+	report.WriteString("Started: " + time.Now().Format("2006-01-02 15:04:05") + "\n\n")
+
+	if hosts, err := net.LookupHost(domain); err == nil && len(hosts) > 0 {
+		report.WriteString("Domain hosts:\n")
+		for _, host := range dedupeKeepOrder(hosts) {
+			report.WriteString("- " + host + "\n")
+		}
+	} else if err != nil {
+		report.WriteString("Domain hosts: lookup failed (" + err.Error() + ")\n")
+	}
+
+	if mxRecords, err := net.LookupMX(domain); err == nil && len(mxRecords) > 0 {
+		sort.Slice(mxRecords, func(i, j int) bool { return mxRecords[i].Pref < mxRecords[j].Pref })
+		report.WriteString("\nMX records:\n")
+		for _, mx := range mxRecords {
+			report.WriteString(fmt.Sprintf("- %s preference=%d\n", strings.TrimSuffix(mx.Host, "."), mx.Pref))
+		}
+	} else if err != nil {
+		report.WriteString("\nMX records: lookup failed (" + err.Error() + ")\n")
+	} else {
+		report.WriteString("\nMX records: none found\n")
+	}
+
+	if nsRecords, err := net.LookupNS(domain); err == nil && len(nsRecords) > 0 {
+		report.WriteString("\nName servers:\n")
+		for _, ns := range nsRecords {
+			report.WriteString("- " + strings.TrimSuffix(ns.Host, ".") + "\n")
+		}
+	}
+
+	txtRecords, txtErr := net.LookupTXT(domain)
+	spfRecords := filterTXTRecords(txtRecords, "v=spf1")
+	report.WriteString("\nSPF records:\n")
+	if txtErr != nil {
+		report.WriteString("- lookup failed: " + txtErr.Error() + "\n")
+	} else if len(spfRecords) == 0 {
+		report.WriteString("- none found\n")
+	} else {
+		for _, txt := range spfRecords {
+			report.WriteString("- " + txt + "\n")
+		}
+	}
+
+	dmarcRecords, dmarcErr := net.LookupTXT("_dmarc." + domain)
+	dmarcRecords = filterTXTRecords(dmarcRecords, "v=DMARC1")
+	report.WriteString("\nDMARC records:\n")
+	if dmarcErr != nil {
+		report.WriteString("- lookup failed: " + dmarcErr.Error() + "\n")
+	} else if len(dmarcRecords) == 0 {
+		report.WriteString("- none found\n")
+	} else {
+		for _, txt := range dmarcRecords {
+			report.WriteString("- " + txt + "\n")
+		}
+	}
+
+	status := "ok"
+	summary := "Email domain footprint completed."
+	if len(spfRecords) == 0 || len(dmarcRecords) == 0 {
+		status = "warning"
+		summary = "Email domain footprint completed with missing SPF or DMARC records."
+	}
+
+	outFile, saveErr := saveOSINTOutput("email-domain-footprint", email, []byte(report.String()))
+	if saveErr != nil {
+		recordAndPrintError("email-domain-footprint", email, fmt.Sprintf("Failed to save output: %v", saveErr), start)
+		return
+	}
+
+	recordOSINT(OSINTRecord{
+		Tool:            "email-domain-footprint",
+		Target:          email,
+		Status:          status,
+		Summary:         summary,
+		OutputFile:      outFile,
+		DurationSeconds: time.Since(start).Seconds(),
+		RanAt:           time.Now(),
+	})
+	fmt.Printf("%sSaved email domain footprint to %s%s\n", utils.Green, outFile, utils.Reset)
+	printOSINTOutputPreview("email-domain-footprint", []byte(report.String()))
+}
+
+func filterTXTRecords(records []string, prefix string) []string {
+	prefix = strings.ToLower(prefix)
+	var out []string
+	for _, record := range records {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(record)), prefix) {
+			out = append(out, record)
+		}
+	}
+	return dedupeKeepOrder(out)
+}
+
+func normalizeHostnames(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSuffix(strings.TrimSpace(value), ".")
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return dedupeKeepOrder(out)
+}
+
+func buildIPWebCandidates(ip string, ptrs []string) []string {
+	candidates := []string{"https://" + ip, "http://" + ip}
+	for _, host := range ptrs {
+		candidates = append(candidates, "https://"+host, "http://"+host)
+	}
+	return dedupeKeepOrder(limitStrings(candidates, 12))
+}
+
+func buildDomainWebCandidates(domain string, ips []string) []string {
+	candidates := []string{"https://" + domain, "http://" + domain}
+	if !strings.HasPrefix(domain, "www.") {
+		candidates = append(candidates, "https://www."+domain, "http://www."+domain)
+	}
+	for _, ip := range ips {
+		if utils.IsValidIPv4(ip) {
+			candidates = append(candidates, "https://"+ip, "http://"+ip)
+		}
+	}
+	return dedupeKeepOrder(limitStrings(candidates, 12))
+}
+
+func limitStrings(values []string, max int) []string {
+	if len(values) <= max {
+		return values
+	}
+	return values[:max]
+}
+
+func probeWebTargets(candidates []string, timeout time.Duration) []webProbeResult {
+	results := make([]webProbeResult, len(candidates))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 6)
+
+	for i, candidate := range candidates {
+		wg.Add(1)
+		go func(idx int, rawURL string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			results[idx] = probeWebTarget(rawURL, timeout)
+		}(i, candidate)
+	}
+
+	wg.Wait()
+	return results
+}
+
+func probeWebTarget(rawURL string, timeout time.Duration) webProbeResult {
+	result := webProbeResult{URL: rawURL}
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	client := &http.Client{Timeout: timeout, Transport: transport}
+
+	req, err := http.NewRequest("GET", rawURL, nil)
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	req.Header.Set("user-agent", "ECLIPSE-OSINT")
+	req.Header.Set("range", "bytes=0-65535")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	defer resp.Body.Close()
+
+	result.Status = resp.Status
+	result.StatusCode = resp.StatusCode
+	result.FinalURL = resp.Request.URL.String()
+	result.Server = resp.Header.Get("server")
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 65536))
+	result.Title = extractHTMLTitle(string(body))
+	result.TLSNames = tlsNamesFromResponse(resp)
+	return result
+}
+
+func tlsNamesFromResponse(resp *http.Response) []string {
+	if resp == nil || resp.TLS == nil || len(resp.TLS.PeerCertificates) == 0 {
+		return nil
+	}
+	cert := resp.TLS.PeerCertificates[0]
+	values := make([]string, 0, len(cert.DNSNames)+len(cert.IPAddresses)+2)
+	if cert.Subject.CommonName != "" {
+		values = append(values, "CN="+cert.Subject.CommonName)
+	}
+	for _, name := range cert.DNSNames {
+		values = append(values, name)
+	}
+	for _, ip := range cert.IPAddresses {
+		values = append(values, ip.String())
+	}
+	if !cert.NotAfter.IsZero() {
+		values = append(values, "expires="+cert.NotAfter.Format("2006-01-02"))
+	}
+	return dedupeKeepOrder(values)
+}
+
+func writeWebProbeResults(report *strings.Builder, results []webProbeResult) {
+	report.WriteString("\nWeb probes:\n")
+	if len(results) == 0 {
+		report.WriteString("- no candidates generated\n")
+		return
+	}
+	for _, result := range results {
+		report.WriteString("- " + result.URL + "\n")
+		if result.Error != "" {
+			report.WriteString("  error: " + result.Error + "\n")
 			continue
 		}
-		req.Header.Set("user-agent", "G0-MULTITOOL-OSINT")
-
-		resp, err := client.Do(req)
-		if err != nil {
-			lastErr = err
-			continue
+		report.WriteString("  status: " + result.Status + "\n")
+		if result.FinalURL != "" && result.FinalURL != result.URL {
+			report.WriteString("  final_url: " + result.FinalURL + "\n")
 		}
-
-		data, readErr := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if readErr != nil {
-			lastErr = readErr
-			continue
+		if result.Server != "" {
+			report.WriteString("  server: " + result.Server + "\n")
 		}
+		if result.Title != "" {
+			report.WriteString("  title: " + result.Title + "\n")
+		}
+		if len(result.TLSNames) > 0 {
+			report.WriteString("  tls: " + strings.Join(result.TLSNames, ", ") + "\n")
+		}
+	}
+}
 
-		statusCode = resp.StatusCode
-		if resp.StatusCode >= 200 && resp.StatusCode < 500 {
-			body = data
-			selectedURL = endpoint
+func saveWebFinderResult(toolName, target, report string, start time.Time, results []webProbeResult) {
+	status := "warning"
+	summary := "No responsive web endpoints found."
+	for _, result := range results {
+		if result.StatusCode > 0 && result.StatusCode < 600 {
+			status = "ok"
+			summary = "Web finder completed with responsive endpoint(s)."
 			break
 		}
 	}
 
-	if len(body) == 0 {
-		msg := "SocialEye request failed."
-		if lastErr != nil {
-			msg = fmt.Sprintf("SocialEye request failed: %v", lastErr)
-		}
-		recordAndPrintError("socialeye", target, msg, start)
-		return
-	}
-
-	report := strings.Builder{}
-	report.WriteString("Tool: SocialEye.net\n")
-	report.WriteString("Target: " + target + "\n")
-	report.WriteString("URL: " + selectedURL + "\n")
-	report.WriteString("HTTP Status: " + strconv.Itoa(statusCode) + "\n")
-	report.WriteString("Fetched At: " + time.Now().Format("2006-01-02 15:04:05") + "\n\n")
-	plain := extractReadableTextFromHTML(string(body))
-	title := extractHTMLTitle(string(body))
-	isNotFound := statusCode == 404 || strings.Contains(strings.ToLower(plain), "404")
-
-	if title != "" {
-		report.WriteString("Page Title: " + title + "\n")
-	}
-	if isNotFound {
-		report.WriteString("Result: No public result page found for this query (HTTP 404 / not-found).\n")
-		report.WriteString("Hint: the target may not exist, or SocialEye may require a different/private workflow.\n")
-	} else {
-		if len(plain) > 1200 {
-			plain = plain[:1200]
-		}
-		if plain == "" {
-			plain = "No readable result text extracted."
-		}
-		report.WriteString("Extracted Summary:\n")
-		report.WriteString(plain + "\n")
-	}
-
-	outFile, saveErr := saveOSINTOutput("socialeye", target, []byte(report.String()))
+	outFile, saveErr := saveOSINTOutput(toolName, target, []byte(report))
 	if saveErr != nil {
-		recordAndPrintError("socialeye", target, fmt.Sprintf("Failed to save output: %v", saveErr), start)
+		recordAndPrintError(toolName, target, fmt.Sprintf("Failed to save output: %v", saveErr), start)
 		return
 	}
 
 	recordOSINT(OSINTRecord{
-		Tool:            "socialeye",
+		Tool:            toolName,
 		Target:          target,
-		Status:          "ok",
-		Summary:         "SocialEye lookup completed.",
+		Status:          status,
+		Summary:         summary,
 		OutputFile:      outFile,
 		DurationSeconds: time.Since(start).Seconds(),
 		RanAt:           time.Now(),
 	})
-
-	fmt.Printf("%sSaved SocialEye output to %s%s\n", utils.Green, outFile, utils.Reset)
-	printOSINTOutputPreview("socialeye", []byte(report.String()))
-}
-
-func runHIBPCheck(email string) {
-	start := time.Now()
-	apiKey := strings.TrimSpace(os.Getenv("HIBP_API_KEY"))
-	if apiKey == "" {
-		recordAndPrintError("haveibeenpwned", email, "HIBP_API_KEY not set. Create one at: https://haveibeenpwned.com/API/Key", start)
-		return
-	}
-
-	escaped := url.PathEscape(email)
-	req, err := http.NewRequest("GET", "https://haveibeenpwned.com/api/v3/breachedaccount/"+escaped+"?truncateResponse=false", nil)
-	if err != nil {
-		recordAndPrintError("haveibeenpwned", email, fmt.Sprintf("Request creation failed: %v", err), start)
-		return
-	}
-	req.Header.Set("hibp-api-key", apiKey)
-	req.Header.Set("user-agent", "G0-MULTITOOL-OSINT")
-
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		recordAndPrintError("haveibeenpwned", email, fmt.Sprintf("Request failed: %v", err), start)
-		return
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		recordAndPrintError("haveibeenpwned", email, fmt.Sprintf("Response read failed: %v", err), start)
-		return
-	}
-
-	if resp.StatusCode == 404 {
-		outFile, saveErr := saveOSINTOutput("haveibeenpwned", email, []byte("No breach found for this account.\n"))
-		if saveErr != nil {
-			recordAndPrintError("haveibeenpwned", email, fmt.Sprintf("Failed to save output: %v", saveErr), start)
-			return
-		}
-		recordOSINT(OSINTRecord{
-			Tool:            "haveibeenpwned",
-			Target:          email,
-			Status:          "ok",
-			Summary:         "No breach found.",
-			OutputFile:      outFile,
-			DurationSeconds: time.Since(start).Seconds(),
-			RanAt:           time.Now(),
-		})
-		fmt.Printf("%sNo breach found. Saved result to %s%s\n", utils.Green, outFile, utils.Reset)
-		return
-	}
-
-	if resp.StatusCode != 200 {
-		recordAndPrintError("haveibeenpwned", email, fmt.Sprintf("HIBP API returned HTTP %d", resp.StatusCode), start)
-		return
-	}
-
-	outFile, saveErr := saveOSINTOutput("haveibeenpwned", email, body)
-	if saveErr != nil {
-		recordAndPrintError("haveibeenpwned", email, fmt.Sprintf("Failed to save output: %v", saveErr), start)
-		return
-	}
-
-	recordOSINT(OSINTRecord{
-		Tool:            "haveibeenpwned",
-		Target:          email,
-		Status:          "warning",
-		Summary:         "Breach records found for this account.",
-		OutputFile:      outFile,
-		DurationSeconds: time.Since(start).Seconds(),
-		RanAt:           time.Now(),
-	})
-	fmt.Printf("%sPotential breaches found. Saved result to %s%s\n", utils.Yellow, outFile, utils.Reset)
-}
-
-func createMaltegoSeed(target string) {
-	start := time.Now()
-	if err := os.MkdirAll(osintReportsDir, 0755); err != nil {
-		recordAndPrintError("maltego-seed", target, fmt.Sprintf("Cannot create reports dir: %v", err), start)
-		return
-	}
-
-	name := buildOSINTOutputName("maltego-seed", target, "csv")
-	fullPath := filepath.Join(osintReportsDir, name)
-	entityType, description := classifyMaltegoSeedTarget(target)
-	var csvBuffer bytes.Buffer
-	writer := csv.NewWriter(&csvBuffer)
-	_ = writer.Write([]string{"EntityType", "Value", "Description"})
-	_ = writer.Write([]string{entityType, strings.TrimSpace(target), description})
-	writer.Flush()
-	if writerErr := writer.Error(); writerErr != nil {
-		recordAndPrintError("maltego-seed", target, fmt.Sprintf("Cannot build CSV seed: %v", writerErr), start)
-		return
-	}
-
-	if err := os.WriteFile(fullPath, csvBuffer.Bytes(), 0644); err != nil {
-		recordAndPrintError("maltego-seed", target, fmt.Sprintf("Cannot write seed file: %v", err), start)
-		return
-	}
-
-	recordOSINT(OSINTRecord{
-		Tool:            "maltego-seed",
-		Target:          target,
-		Status:          "ok",
-		Summary:         fmt.Sprintf("CSV seed file created for Maltego import (%s).", entityType),
-		OutputFile:      fullPath,
-		DurationSeconds: time.Since(start).Seconds(),
-		RanAt:           time.Now(),
-	})
-
-	var summary strings.Builder
-	summary.WriteString("MALTEGO SEED SUMMARY\n")
-	summary.WriteString("What this does: creates a starter CSV (seed) to import into Maltego and start graph pivots/transforms.\n")
-	summary.WriteString("Detected entity type: " + entityType + "\n")
-	summary.WriteString("Target value: " + strings.TrimSpace(target) + "\n")
-	summary.WriteString("Description: " + description + "\n")
-	summary.WriteString("Rows written: 1\n")
-	summary.WriteString("Output file: " + fullPath + "\n")
-	summary.WriteString("\nHow to use in Maltego:\n")
-	summary.WriteString("1. Open Maltego.\n")
-	summary.WriteString("2. Import the CSV/Table file.\n")
-	summary.WriteString("3. Map column 'Value' as the main entity value.\n")
-	summary.WriteString("4. Run transforms on the imported entity.\n")
-
-	fmt.Printf("%sMaltego seed created: %s%s\n", utils.Green, fullPath, utils.Reset)
-	printOSINTOutputPreview("maltego-seed", []byte(summary.String()))
-}
-
-func classifyMaltegoSeedTarget(target string) (string, string) {
-	v := strings.TrimSpace(target)
-	switch {
-	case isLikelyEmail(v):
-		return "maltego.EmailAddress", "Email seed. Use this to pivot into breaches, usernames, domains, and people data."
-	case utils.IsValidIPv4(v):
-		return "maltego.IPv4Address", "IPv4 seed. Use this to pivot into ASN, hosting, services, and related infrastructure."
-	case isLikelyDomain(v):
-		return "maltego.Domain", "Domain seed. Use this to pivot into DNS, subdomains, certificates, and organization footprint."
-	default:
-		return "maltego.Phrase", "Generic phrase seed for manual investigation and custom transform pivots."
-	}
+	fmt.Printf("%sSaved web finder result to %s%s\n", utils.Green, outFile, utils.Reset)
+	printOSINTOutputPreview(toolName, []byte(report))
 }
 
 func runOSINTCommand(toolName, target, cmdName string, args []string) {
@@ -711,7 +1013,11 @@ func executeOSINTCommand(toolName, target, cmdName string, cmd *exec.Cmd, start 
 	}
 
 	cmd.Env = processEnvWithExpandedPath()
-	output, err := cmd.CombinedOutput()
+	output, err, timedOut := runCommandCaptureWithProgress(toolName+" -> "+target, cmd, commandTimeoutForTool(toolName))
+	if timedOut {
+		err = fmt.Errorf("command timed out after %s", commandTimeoutForTool(toolName).Round(time.Second))
+		output = append(output, []byte("\n"+err.Error()+"\n")...)
+	}
 	if err != nil && shouldAttemptPkgResourcesFix(cmdName, output) {
 		hint := manualRepairHintForTool(cmdName)
 		if hint != "" {
@@ -764,7 +1070,114 @@ func runSetupCommand(cmd *exec.Cmd) ([]byte, error) {
 		return nil, errors.New("nil setup command")
 	}
 	cmd.Env = processEnvWithExpandedPath()
-	return cmd.CombinedOutput()
+	output, err, _ := runCommandCaptureWithProgressLive("setup: "+cmd.String(), cmd, 15*time.Minute, true)
+	return output, err
+}
+
+func runCommandCaptureWithProgress(label string, cmd *exec.Cmd, timeout time.Duration) ([]byte, error, bool) {
+	return runCommandCaptureWithProgressLive(label, cmd, timeout, false)
+}
+
+func runCommandCaptureWithProgressLive(label string, cmd *exec.Cmd, timeout time.Duration, liveOutput bool) ([]byte, error, bool) {
+	if cmd == nil {
+		return nil, errors.New("nil command"), false
+	}
+	if timeout <= 0 {
+		timeout = 2 * time.Minute
+	}
+	if cmd.Env == nil {
+		cmd.Env = processEnvWithExpandedPath()
+	}
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err, false
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, err, false
+	}
+
+	var stdoutBuf bytes.Buffer
+	var stderrBuf bytes.Buffer
+	var wg sync.WaitGroup
+	if liveOutput {
+		cmd.Stdin = os.Stdin
+	}
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		var writer io.Writer = &stdoutBuf
+		if liveOutput {
+			writer = io.MultiWriter(&stdoutBuf, os.Stdout)
+		}
+		_, _ = io.Copy(writer, stdout)
+	}()
+	go func() {
+		defer wg.Done()
+		var writer io.Writer = &stderrBuf
+		if liveOutput {
+			writer = io.MultiWriter(&stderrBuf, os.Stderr)
+		}
+		_, _ = io.Copy(writer, stderr)
+	}()
+
+	if err := cmd.Start(); err != nil {
+		return nil, err, false
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		waitErr := cmd.Wait()
+		wg.Wait()
+		done <- waitErr
+	}()
+
+	started := time.Now()
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	for {
+		select {
+		case err := <-done:
+			return combineCommandOutput(stdoutBuf.Bytes(), stderrBuf.Bytes()), err, false
+		case <-ticker.C:
+			fmt.Printf("%sStill running:%s %s (%.0fs elapsed)\n", utils.Blue, utils.Reset, label, time.Since(started).Seconds())
+		case <-timer.C:
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+			}
+			err := <-done
+			return combineCommandOutput(stdoutBuf.Bytes(), stderrBuf.Bytes()), err, true
+		}
+	}
+}
+
+func combineCommandOutput(stdout, stderr []byte) []byte {
+	output := make([]byte, 0, len(stdout)+len(stderr)+1)
+	output = append(output, stdout...)
+	if len(stdout) > 0 && len(stderr) > 0 && stdout[len(stdout)-1] != '\n' {
+		output = append(output, '\n')
+	}
+	output = append(output, stderr...)
+	return output
+}
+
+func commandTimeoutForTool(toolName string) time.Duration {
+	switch strings.ToLower(strings.TrimSpace(toolName)) {
+	case "dns-a", "dns-aaaa", "dns-mx", "dns-txt", "dns-ns", "dns-ptr":
+		return 20 * time.Second
+	case "whois", "shodan-cli":
+		return 45 * time.Second
+	case "sherlock", "theharvester", "maigret":
+		return 3 * time.Minute
+	case "recon-ng", "spiderfoot":
+		return 4 * time.Minute
+	default:
+		return 2 * time.Minute
+	}
 }
 
 func saveOSINTOutput(toolName, target string, data []byte) (string, error) {
@@ -897,6 +1310,10 @@ func isLikelyEmail(v string) bool {
 
 func ensureDependenciesForOSINTOption(reader *bufio.Reader, option string) bool {
 	required := requiredDependenciesForOption(option)
+	return ensureDependencyRequirements(reader, required)
+}
+
+func ensureDependencyRequirements(reader *bufio.Reader, required []string) bool {
 	if len(required) == 0 {
 		return true
 	}
@@ -910,7 +1327,7 @@ func ensureDependenciesForOSINTOption(reader *bufio.Reader, option string) bool 
 	installCommands := buildDependencyInstallCommands(missing)
 	if len(installCommands) == 0 {
 		printDependencyInstallHints(missing)
-		return true
+		return false
 	}
 
 	fmt.Printf("%sInstall only these dependencies now? (y/N): %s", utils.Yellow, utils.Reset)
@@ -918,7 +1335,7 @@ func ensureDependenciesForOSINTOption(reader *bufio.Reader, option string) bool 
 	answer = strings.TrimSpace(strings.ToLower(answer))
 	if answer != "y" && answer != "yes" {
 		printDependencyInstallHints(missing)
-		return true
+		return false
 	}
 
 	runDependencyInstallCommands(installCommands)
@@ -926,54 +1343,34 @@ func ensureDependenciesForOSINTOption(reader *bufio.Reader, option string) bool 
 	if len(stillMissing) > 0 {
 		fmt.Printf("%sStill missing after setup: %s%s\n", utils.Red, strings.Join(formatRequirementLabels(stillMissing), ", "), utils.Reset)
 		printDependencyInstallHints(stillMissing)
-		return true
+		return false
 	}
 	return true
 }
 
 func requiredDependenciesForOption(option string) []string {
-	switch option {
-	case "1":
-		return nil
-	case "2":
-		return nil
-	case "3":
-		if isToolInstalled("theHarvester") || canRunLocalPythonRepo(filepath.Join(osintToolsDir, "theHarvester")) {
-			return nil
-		}
+	switch strings.ToLower(strings.TrimSpace(option)) {
+	case "whois":
+		return []string{"whois"}
+	case "dns":
+		return []string{"dig|nslookup"}
+	case "python-pip":
 		return []string{"python3|python|py", "pip3|pip"}
-	case "4":
-		return nil
-	case "5":
-		if isToolInstalled("shodan") {
-			return nil
-		}
+	case "git":
+		return []string{"git"}
+	case "go":
+		return []string{"go"}
+	case "3", "5", "7", "13":
 		return []string{"python3|python|py", "pip3|pip"}
-	case "7":
-		if isToolInstalled("sherlock") {
-			return nil
-		}
-		return []string{"python3|python|py", "pip3|pip"}
-	case "13":
-		if isToolInstalled("maigret") || canRunLocalPythonRepo(filepath.Join(osintToolsDir, "maigret")) {
-			return nil
-		}
-		return []string{"python3|python|py", "pip3|pip"}
-	case "8":
-		return nil
-	case "9":
-		return nil
 	default:
 		return nil
 	}
 }
 
 func requiredAPIKeysForOption(option string) []string {
-	switch option {
-	case "5":
+	switch strings.ToLower(strings.TrimSpace(option)) {
+	case "5", "shodan-cli":
 		return []string{"SHODAN_API_KEY"}
-	case "10":
-		return []string{"HIBP_API_KEY"}
 	default:
 		return nil
 	}
@@ -1043,7 +1440,7 @@ func manageAPIKeys(reader *bufio.Reader) {
 	fmt.Printf("\n%s=== API KEY MANAGER ===%s\n", utils.Blue, utils.Reset)
 	store := loadAPIKeyStore()
 
-	allKeys := []string{"SHODAN_API_KEY", "HIBP_API_KEY"}
+	allKeys := []string{"SHODAN_API_KEY"}
 	for _, k := range allKeys {
 		val := strings.TrimSpace(os.Getenv(k))
 		if val == "" {
@@ -1122,6 +1519,278 @@ func loadStoredAPIKeysIntoEnv() {
 			_ = os.Setenv(k, v)
 		}
 	}
+}
+
+type localToolSpec struct {
+	Key         string
+	DisplayName string
+	CommandName string
+	RepoURL     string
+}
+
+func ensureExecToolsDir() {
+	if dirExists(legacyOSINTToolsDir) && !dirExists(osintToolsDir) {
+		if err := os.Rename(legacyOSINTToolsDir, osintToolsDir); err != nil {
+			fmt.Printf("%sCould not migrate %s to %s: %v%s\n", utils.Yellow, legacyOSINTToolsDir, osintToolsDir, err, utils.Reset)
+		}
+	}
+	if err := os.MkdirAll(osintToolsDir, 0755); err != nil {
+		fmt.Printf("%sCould not create %s: %v%s\n", utils.Red, osintToolsDir, err, utils.Reset)
+	}
+}
+
+func localOSINTToolSpecs() []localToolSpec {
+	return []localToolSpec{
+		{Key: "maigret", DisplayName: "Maigret", CommandName: "maigret", RepoURL: "https://github.com/soxoj/maigret.git"},
+		{Key: "theharvester", DisplayName: "theHarvester", CommandName: "theHarvester", RepoURL: "https://github.com/laramies/theHarvester.git"},
+		{Key: "recon-ng", DisplayName: "Recon-ng", CommandName: "recon-ng", RepoURL: "https://github.com/lanmaster53/recon-ng.git"},
+		{Key: "spiderfoot", DisplayName: "SpiderFoot", CommandName: "spiderfoot", RepoURL: "https://github.com/smicallef/spiderfoot.git"},
+	}
+}
+
+func localOSINTToolSpec(tool string) (localToolSpec, bool) {
+	key := normalizeToolKey(tool)
+	for _, spec := range localOSINTToolSpecs() {
+		if spec.Key == key || strings.EqualFold(spec.CommandName, tool) {
+			return spec, true
+		}
+	}
+	return localToolSpec{}, false
+}
+
+func ensureLocalOrGlobalToolReady(reader *bufio.Reader, tool string) bool {
+	spec, ok := localOSINTToolSpec(tool)
+	if !ok {
+		fmt.Printf("%sNo setup profile exists for %s.%s\n", utils.Red, tool, utils.Reset)
+		return false
+	}
+
+	if isToolInstalled(spec.CommandName) || isToolInstalled(spec.Key) {
+		return true
+	}
+
+	repoPath := toolLocalRepoPath(spec.Key)
+	if !dirExists(repoPath) {
+		fmt.Printf("%s%s is not installed globally and was not found in %s.%s\n", utils.Yellow, spec.DisplayName, osintToolsDir, utils.Reset)
+		if !promptYesNo(reader, "Download it into "+repoPath+" now?") {
+			fmt.Printf("%sCancelled. %s needs to be installed before this option can run.%s\n", utils.Yellow, spec.DisplayName, utils.Reset)
+			return false
+		}
+		if !ensureDependencyRequirements(reader, []string{"git"}) {
+			return false
+		}
+		if !cloneLocalTool(spec) {
+			return false
+		}
+	}
+
+	if localPythonToolReady(spec.Key) {
+		return true
+	}
+
+	fmt.Printf("%sLocal repo found, but its Python environment is not ready: %s%s\n", utils.Yellow, repoPath, utils.Reset)
+	if !promptYesNo(reader, "Create/update the local .venv for "+spec.DisplayName+"?") {
+		return false
+	}
+	if !ensureDependencyRequirements(reader, []string{"python3|python|py", "pip3|pip"}) {
+		return false
+	}
+	if !setupLocalPythonTool(spec) {
+		return false
+	}
+	return localPythonToolReady(spec.Key)
+}
+
+func localPythonToolReady(tool string) bool {
+	repoPath := toolLocalRepoPath(tool)
+	if !dirExists(repoPath) {
+		return false
+	}
+	pythonPath, _ := venvPaths(filepath.Join(repoPath, ".venv"))
+	return fileExists(pythonPath)
+}
+
+func cloneLocalTool(spec localToolSpec) bool {
+	ensureExecToolsDir()
+	repoPath := toolLocalRepoPath(spec.Key)
+	if dirExists(repoPath) {
+		return true
+	}
+	gitPath, err := resolveToolPath("git")
+	if err != nil {
+		fmt.Printf("%sGit is not available.%s\n", utils.Red, utils.Reset)
+		return false
+	}
+	cmd := exec.Command(gitPath, "clone", "--depth=1", spec.RepoURL, repoPath)
+	return runTrackedSetupCommand("clone "+spec.DisplayName, cmd)
+}
+
+func setupLocalPythonTool(spec localToolSpec) bool {
+	repoPath := toolLocalRepoPath(spec.Key)
+	if !dirExists(repoPath) {
+		fmt.Printf("%sLocal repository not found: %s%s\n", utils.Red, repoPath, utils.Reset)
+		return false
+	}
+
+	systemPythonPath, err := resolveSystemPythonPath()
+	if err != nil {
+		fmt.Printf("%sPython interpreter not found: %v%s\n", utils.Red, err, utils.Reset)
+		return false
+	}
+
+	venvPath := filepath.Join(repoPath, ".venv")
+	pythonPath, pipPath := venvPaths(venvPath)
+	if !fileExists(pythonPath) {
+		createCmd := exec.Command(systemPythonPath, "-m", "venv", venvPath)
+		createCmd.Dir = repoPath
+		if !runTrackedSetupCommand("venv "+spec.DisplayName, createCmd) {
+			return false
+		}
+	}
+
+	args := append([]string{}, localToolPipInstallArgs(spec.Key)...)
+	installCmd := exec.Command(pipPath, args...)
+	installCmd.Dir = repoPath
+	return runTrackedSetupCommand("install "+spec.DisplayName, installCmd)
+}
+
+func localToolPipInstallArgs(tool string) []string {
+	switch normalizeToolKey(tool) {
+	case "recon-ng":
+		return []string{"install", "-r", "REQUIREMENTS"}
+	case "spiderfoot":
+		return []string{"install", "-r", "requirements.txt"}
+	default:
+		return []string{"install", "."}
+	}
+}
+
+func ensurePythonPackageToolReady(reader *bufio.Reader, commandName, pipPackage string) bool {
+	if isToolInstalled(commandName) {
+		return true
+	}
+	fmt.Printf("%s%s is not installed or not on PATH.%s\n", utils.Yellow, commandName, utils.Reset)
+	if !promptYesNo(reader, "Install "+pipPackage+" with python -m pip --user now?") {
+		return false
+	}
+	if !ensureDependencyRequirements(reader, []string{"python3|python|py", "pip3|pip"}) {
+		return false
+	}
+	pythonPath, err := resolveSystemPythonPath()
+	if err != nil {
+		fmt.Printf("%sPython interpreter not found: %v%s\n", utils.Red, err, utils.Reset)
+		return false
+	}
+	cmd := exec.Command(pythonPath, "-m", "pip", "install", "--user", pipPackage)
+	if !runTrackedSetupCommand("pip install "+pipPackage, cmd) {
+		return false
+	}
+	if !isToolInstalled(commandName) {
+		fmt.Printf("%s%s installed, but the executable is still not visible on PATH.%s\n", utils.Yellow, commandName, utils.Reset)
+		fmt.Printf("%sCheck that your user scripts directory is on PATH.%s\n", utils.Yellow, utils.Reset)
+		return false
+	}
+	return true
+}
+
+func ensureSubdomainToolReady(reader *bufio.Reader) bool {
+	if isToolInstalled("subfinder") || isToolInstalled("assetfinder") || isToolInstalled("amass") {
+		return true
+	}
+	fmt.Printf("%sNo supported subdomain tool found (subfinder/assetfinder/amass).%s\n", utils.Yellow, utils.Reset)
+	if !promptYesNo(reader, "Install subfinder with go install now?") {
+		printDependencyInstallHints([]string{"subfinder"})
+		return false
+	}
+	if !ensureDependencyRequirements(reader, []string{"go"}) {
+		return false
+	}
+	goPath, err := resolveToolPath("go")
+	if err != nil {
+		fmt.Printf("%sGo executable not found.%s\n", utils.Red, utils.Reset)
+		return false
+	}
+	cmd := exec.Command(goPath, "install", "github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest")
+	if !runTrackedSetupCommand("go install subfinder", cmd) {
+		return false
+	}
+	return isToolInstalled("subfinder")
+}
+
+func setupRecommendedLocalTools(reader *bufio.Reader) {
+	for _, spec := range localOSINTToolSpecs() {
+		fmt.Printf("\n%s=== %s ===%s\n", utils.Blue, spec.DisplayName, utils.Reset)
+		_ = ensureLocalOrGlobalToolReady(reader, spec.Key)
+	}
+}
+
+func printOSINTToolStatus() {
+	fmt.Printf("%sTool directory:%s %s\n\n", utils.Green, utils.Reset, osintToolsDir)
+	for _, spec := range localOSINTToolSpecs() {
+		repoPath := toolLocalRepoPath(spec.Key)
+		status := "missing"
+		switch {
+		case isToolInstalled(spec.CommandName) || isToolInstalled(spec.Key):
+			status = "global"
+		case localPythonToolReady(spec.Key):
+			status = "local .venv ready"
+		case dirExists(repoPath):
+			status = "repo downloaded, setup needed"
+		}
+		fmt.Printf("%s- %-13s%s %s\n", utils.Green, spec.DisplayName+":", utils.Reset, status)
+	}
+
+	for _, cli := range []string{"sherlock", "shodan", "subfinder", "assetfinder", "amass"} {
+		status := "missing"
+		if isToolInstalled(cli) {
+			status = "available"
+		}
+		fmt.Printf("%s- %-13s%s %s\n", utils.Green, cli+":", utils.Reset, status)
+	}
+}
+
+func promptYesNo(reader *bufio.Reader, question string) bool {
+	fmt.Printf("%s%s (y/N): %s", utils.Yellow, question, utils.Reset)
+	answer, _ := reader.ReadString('\n')
+	answer = strings.TrimSpace(strings.ToLower(answer))
+	return answer == "y" || answer == "yes"
+}
+
+func runTrackedSetupCommand(label string, cmd *exec.Cmd) bool {
+	start := time.Now()
+	fmt.Printf("%sRunning setup:%s %s\n", utils.Blue, utils.Reset, label)
+	output, err := runSetupCommand(cmd)
+	status := "ok"
+	summary := "Setup command completed."
+	if err != nil {
+		status = "warning"
+		summary = fmt.Sprintf("Setup command failed: %v", err)
+		fmt.Printf("%s%s%s\n", utils.Yellow, summary, utils.Reset)
+	}
+
+	outFile := ""
+	if len(output) > 0 {
+		var saveErr error
+		outFile, saveErr = saveOSINTOutput("osint-setup", label, output)
+		if saveErr != nil {
+			fmt.Printf("%sFailed to save setup output: %v%s\n", utils.Red, saveErr, utils.Reset)
+		}
+	}
+
+	recordOSINT(OSINTRecord{
+		Tool:            "osint-setup",
+		Target:          label,
+		Status:          status,
+		Summary:         summary,
+		OutputFile:      outFile,
+		DurationSeconds: time.Since(start).Seconds(),
+		RanAt:           time.Now(),
+	})
+
+	if err == nil {
+		fmt.Printf("%sSetup completed: %s%s\n", utils.Green, label, utils.Reset)
+	}
+	return err == nil
 }
 
 func ensureShodanCLIConfigured() {
@@ -1255,6 +1924,10 @@ func dependencyInstallHint(requirement string) string {
 		return "python3: install Python 3 with your package manager."
 	case "pip":
 		return "pip3: install Python pip (for example 'python3-pip' on Debian/Ubuntu)."
+	case "git":
+		return "git: install Git with your package manager."
+	case "go":
+		return "go: install Go with your package manager."
 	default:
 		return strings.ReplaceAll(strings.TrimSpace(requirement), "|", "/")
 	}
@@ -1275,6 +1948,10 @@ func dependencyInstallCommandsForRequirement(requirement string) []string {
 			return []string{"sudo apt-get install -y python3"}
 		case "pip":
 			return []string{"sudo apt-get install -y python3-pip"}
+		case "git":
+			return []string{"sudo apt-get install -y git"}
+		case "go":
+			return []string{"sudo apt-get install -y golang-go"}
 		}
 	case "pacman":
 		switch key {
@@ -1286,6 +1963,10 @@ func dependencyInstallCommandsForRequirement(requirement string) []string {
 			return []string{"sudo pacman -S --noconfirm python"}
 		case "pip":
 			return []string{"sudo pacman -S --noconfirm python-pip"}
+		case "git":
+			return []string{"sudo pacman -S --noconfirm git"}
+		case "go":
+			return []string{"sudo pacman -S --noconfirm go"}
 		}
 	case "dnf":
 		switch key {
@@ -1297,6 +1978,10 @@ func dependencyInstallCommandsForRequirement(requirement string) []string {
 			return []string{"sudo dnf install -y python3"}
 		case "pip":
 			return []string{"sudo dnf install -y python3-pip"}
+		case "git":
+			return []string{"sudo dnf install -y git"}
+		case "go":
+			return []string{"sudo dnf install -y golang"}
 		}
 	case "brew":
 		switch key {
@@ -1306,6 +1991,10 @@ func dependencyInstallCommandsForRequirement(requirement string) []string {
 			return []string{"brew install bind"}
 		case "python", "pip":
 			return []string{"brew install python"}
+		case "git":
+			return []string{"brew install git"}
+		case "go":
+			return []string{"brew install go"}
 		}
 	case "winget":
 		switch key {
@@ -1313,6 +2002,10 @@ func dependencyInstallCommandsForRequirement(requirement string) []string {
 			return []string{`winget install --id Python.Python.3 --accept-package-agreements --accept-source-agreements`}
 		case "pip":
 			return []string{`py -m ensurepip --upgrade || python -m ensurepip --upgrade`}
+		case "git":
+			return []string{`winget install --id Git.Git --accept-package-agreements --accept-source-agreements`}
+		case "go":
+			return []string{`winget install --id GoLang.Go --accept-package-agreements --accept-source-agreements`}
 		}
 	case "choco":
 		switch key {
@@ -1320,6 +2013,10 @@ func dependencyInstallCommandsForRequirement(requirement string) []string {
 			return []string{`choco install -y python`}
 		case "pip":
 			return []string{`py -m ensurepip --upgrade || python -m ensurepip --upgrade`}
+		case "git":
+			return []string{`choco install -y git`}
+		case "go":
+			return []string{`choco install -y golang`}
 		}
 	}
 
@@ -1353,6 +2050,10 @@ func normalizeRequirementKey(requirement string) string {
 		return "python"
 	case "pip3|pip":
 		return "pip"
+	case "git":
+		return "git"
+	case "go":
+		return "go"
 	default:
 		return strings.ToLower(strings.TrimSpace(requirement))
 	}
@@ -1935,6 +2636,7 @@ func commonToolSearchDirs() []string {
 		"/opt/homebrew/bin",
 		"/snap/bin",
 	}
+	dirs = append(dirs, localExecToolSearchDirs()...)
 	dirs = append(dirs, discoverPipxVenvBinDirs(home)...)
 	if runtime.GOOS == "windows" {
 		appData := os.Getenv("APPDATA")
@@ -1970,6 +2672,30 @@ func commonToolSearchDirs() []string {
 	return merged
 }
 
+func localExecToolSearchDirs() []string {
+	var dirs []string
+	for _, spec := range localOSINTToolSpecs() {
+		repoPath := toolLocalRepoPath(spec.Key)
+		if repoPath == "" {
+			continue
+		}
+		if runtime.GOOS == "windows" {
+			dirs = append(dirs,
+				filepath.Join(repoPath, ".venv", "Scripts"),
+				filepath.Join(repoPath, "bin"),
+				repoPath,
+			)
+			continue
+		}
+		dirs = append(dirs,
+			filepath.Join(repoPath, ".venv", "bin"),
+			filepath.Join(repoPath, "bin"),
+			repoPath,
+		)
+	}
+	return dirs
+}
+
 func processEnvWithExpandedPath() []string {
 	env := os.Environ()
 	newPath := strings.Join(commonToolSearchDirs(), string(os.PathListSeparator))
@@ -1995,7 +2721,8 @@ func runWithSystemShell(command string) ([]byte, error) {
 		cmd = exec.Command("bash", "-lc", command)
 	}
 	cmd.Env = processEnvWithExpandedPath()
-	return cmd.CombinedOutput()
+	output, err, _ := runCommandCaptureWithProgressLive("shell: "+command, cmd, 15*time.Minute, true)
+	return output, err
 }
 
 func discoverWindowsPythonScriptDirs(home, appData, localAppData string) []string {
