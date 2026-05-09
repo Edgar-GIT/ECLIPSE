@@ -173,38 +173,133 @@ func ensureLinuxRootAccess() bool {
 	return false
 }
 
-func ensureLinuxTools(requiredTools map[string]string) bool {
-	var missingTools []string
-	missingPackagesMap := make(map[string]bool)
+type pkgBackend int
 
-	for tool, pkg := range requiredTools {
-		if _, err := exec.LookPath(tool); err != nil {
-			missingTools = append(missingTools, tool)
-			missingPackagesMap[pkg] = true
+const (
+	backendNone pkgBackend = iota
+	backendApt
+	backendApk
+	backendPacman
+	backendDnf
+	backendYum
+	backendZypper
+)
+
+func detectPkgBackend() pkgBackend {
+	order := []struct {
+		b pkgBackend
+		n string
+	}{
+		{backendApt, "apt-get"},
+		{backendApk, "apk"},
+		{backendPacman, "pacman"},
+		{backendDnf, "dnf"},
+		{backendYum, "yum"},
+		{backendZypper, "zypper"},
+	}
+	for _, o := range order {
+		if _, err := exec.LookPath(o.n); err == nil {
+			return o.b
 		}
 	}
+	return backendNone
+}
 
+func concretePkgName(b pkgBackend, abstract string) string {
+	switch abstract {
+	case "iproute2":
+		if b == backendDnf || b == backendYum || b == backendZypper {
+			return "iproute"
+		}
+		return "iproute2"
+	case "network-manager":
+		switch b {
+		case backendPacman, backendApk:
+			return "networkmanager"
+		case backendDnf, backendYum, backendZypper:
+			return "NetworkManager"
+		default:
+			return "network-manager"
+		}
+	default:
+		return abstract
+	}
+}
+
+func dedupeSortedStrings(in []string) []string {
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func installPkgsBackend(b pkgBackend, pkgs []string) error {
+	switch b {
+	case backendApt:
+		if err := runInteractiveCommand("apt-get", "update"); err != nil {
+			return err
+		}
+		return runInteractiveCommand("apt-get", append([]string{"install", "-y"}, pkgs...)...)
+	case backendApk:
+		return runInteractiveCommand("apk", append([]string{"add", "--no-cache"}, pkgs...)...)
+	case backendPacman:
+		return runInteractiveCommand("pacman", append([]string{"-Sy", "--needed", "--noconfirm"}, pkgs...)...)
+	case backendDnf:
+		return runInteractiveCommand("dnf", append([]string{"install", "-y"}, pkgs...)...)
+	case backendYum:
+		return runInteractiveCommand("yum", append([]string{"install", "-y"}, pkgs...)...)
+	case backendZypper:
+		if err := runInteractiveCommand("zypper", "refresh"); err != nil {
+			return err
+		}
+		return runInteractiveCommand("zypper", append([]string{"install", "-y", "--non-interactive"}, pkgs...)...)
+	default:
+		return fmt.Errorf("no supported package manager")
+	}
+}
+
+func ensureLinuxTools(requiredTools map[string]string) bool {
+	var missingTools []string
+	abstractSet := make(map[string]struct{})
+	for tool, abstract := range requiredTools {
+		if _, err := exec.LookPath(tool); err != nil {
+			missingTools = append(missingTools, tool)
+			abstractSet[abstract] = struct{}{}
+		}
+	}
 	if len(missingTools) == 0 {
 		return true
 	}
-
 	sort.Strings(missingTools)
-	var missingPackages []string
-	for pkg := range missingPackagesMap {
-		missingPackages = append(missingPackages, pkg)
-	}
-	sort.Strings(missingPackages)
 
-	fmt.Printf("%s[!] Missing tools: %s%s\n", utils.Yellow, strings.Join(missingTools, ", "), utils.Reset)
-
-	if _, err := exec.LookPath("apt-get"); err != nil {
-		fmt.Printf("%s[!] Automatic install currently supports apt-based systems only.%s\n", utils.Red, utils.Reset)
-		fmt.Printf("%s[!] Please install manually: %s%s\n", utils.Yellow, strings.Join(missingPackages, " "), utils.Reset)
+	back := detectPkgBackend()
+	if back == backendNone {
+		fmt.Printf("%s[!] Missing tools: %s%s\n", utils.Yellow, strings.Join(missingTools, ", "), utils.Reset)
+		fmt.Printf("%s[!] No supported package manager (apt-get, apk, pacman, dnf, yum, zypper).%s\n", utils.Red, utils.Reset)
 		return false
 	}
 
+	pkgs := make([]string, 0, len(abstractSet))
+	for a := range abstractSet {
+		pkgs = append(pkgs, concretePkgName(back, a))
+	}
+	pkgs = dedupeSortedStrings(pkgs)
+
+	fmt.Printf("%s[!] Missing tools: %s%s\n", utils.Yellow, strings.Join(missingTools, ", "), utils.Reset)
+
 	reader := bufio.NewReader(os.Stdin)
-	fmt.Printf("%s[*] Install missing dependencies now? (y/n): %s", utils.Yellow, utils.Reset)
+	fmt.Printf("%s[*] Install packages (%s): %s ? (y/n): %s", utils.Yellow, pkgBackendLabel(back), strings.Join(pkgs, " "), utils.Reset)
 	answer, _ := reader.ReadString('\n')
 	answer = strings.ToLower(strings.TrimSpace(answer))
 	if answer != "y" && answer != "yes" {
@@ -212,15 +307,8 @@ func ensureLinuxTools(requiredTools map[string]string) bool {
 		return false
 	}
 
-	fmt.Printf("%s[*] Running apt-get update...%s\n", utils.Yellow, utils.Reset)
-	if err := runInteractiveCommand("apt-get", "update"); err != nil {
-		fmt.Printf("%s[!] apt-get update failed: %v%s\n", utils.Red, err, utils.Reset)
-		return false
-	}
-
-	installArgs := append([]string{"install", "-y"}, missingPackages...)
-	fmt.Printf("%s[*] Installing packages: %s%s\n", utils.Yellow, strings.Join(missingPackages, ", "), utils.Reset)
-	if err := runInteractiveCommand("apt-get", installArgs...); err != nil {
+	fmt.Printf("%s[*] Installing...%s\n", utils.Yellow, utils.Reset)
+	if err := installPkgsBackend(back, pkgs); err != nil {
 		fmt.Printf("%s[!] Package installation failed: %v%s\n", utils.Red, err, utils.Reset)
 		return false
 	}
@@ -231,8 +319,26 @@ func ensureLinuxTools(requiredTools map[string]string) bool {
 			return false
 		}
 	}
-
 	return true
+}
+
+func pkgBackendLabel(b pkgBackend) string {
+	switch b {
+	case backendApt:
+		return "apt"
+	case backendApk:
+		return "apk"
+	case backendPacman:
+		return "pacman"
+	case backendDnf:
+		return "dnf"
+	case backendYum:
+		return "yum"
+	case backendZypper:
+		return "zypper"
+	default:
+		return "unknown"
+	}
 }
 
 func runInteractiveCommand(name string, args ...string) error {
@@ -769,7 +875,7 @@ func startFakeLANLinux(config APConfig) {
 	}
 
 	dnsmasqExtraPath = sessionLogPath("dnsmasq-extra.conf")
-	if err := os.WriteFile(dnsmasqExtraPath, []byte("# nethunter — per-domain overrides (see syncDnsmasqAddressRules)\n"), 0644); err != nil {
+	if err := os.WriteFile(dnsmasqExtraPath, nil, 0644); err != nil {
 		fmt.Printf("%s[!] Failed to init dnsmasq extra conf: %v%s\n", utils.Red, err, utils.Reset)
 		return
 	}
@@ -873,6 +979,9 @@ func startEvilTwinLinux(config EvilTwinConfig) {
 func applyEvilTwinIptables(apIface string) error {
 	if err := ensureIptablesRedirectFirst(apIface, "80", "8888"); err != nil {
 		return fmt.Errorf("HTTP redirect: %w", err)
+	}
+	if err := ensureInputRejectTCPFirst(apIface, "443"); err != nil {
+		return fmt.Errorf("gateway TLS reject: %w", err)
 	}
 	redirectConfigured = true
 	return nil
@@ -2728,11 +2837,11 @@ func cleanupInternetSharing(apIface, upstreamIface string) {
 }
 
 func cleanupEvilTwinRedirect(apIface string) {
-	if !redirectConfigured || apIface == "" {
+	if apIface == "" {
 		redirectConfigured = false
 		return
 	}
-
+	deleteIptablesRule(append([]string{"INPUT"}, "-i", apIface, "-p", "tcp", "--dport", "443", "-j", "REJECT", "--reject-with", "tcp-reset"))
 	deleteIptablesRule([]string{"-t", "nat", "PREROUTING", "-i", apIface, "-p", "tcp", "--dport", "80", "-j", "REDIRECT", "--to-ports", "8888"})
 	deleteIptablesRule([]string{"-t", "nat", "PREROUTING", "-i", apIface, "-p", "tcp", "--dport", "443", "-j", "REDIRECT", "--to-ports", "8888"})
 	redirectConfigured = false
@@ -2746,6 +2855,15 @@ func ensureIptablesRedirectFirst(apIface, dport, toPorts string) error {
 	}
 	insert := append([]string{"-t", "nat", "-I", "PREROUTING", "1"}, tail...)
 	return exec.Command("iptables", insert...).Run()
+}
+
+func ensureInputRejectTCPFirst(apIface, dport string) error {
+	tail := []string{"-i", apIface, "-p", "tcp", "--dport", dport, "-j", "REJECT", "--reject-with", "tcp-reset"}
+	full := append([]string{"INPUT"}, tail...)
+	if exec.Command("iptables", append([]string{"-C"}, full...)...).Run() == nil {
+		return nil
+	}
+	return exec.Command("iptables", append([]string{"-I", "INPUT", "1"}, tail...)...).Run()
 }
 
 func clientIPFromRequest(r *http.Request) string {
@@ -2809,7 +2927,6 @@ func syncDnsmasqAddressRules() {
 		return
 	}
 	var b strings.Builder
-	b.WriteString("# nethunter — generated; global DNS spoof → address=\n")
 	rulesMutex.RLock()
 	keys := make([]string, 0, len(dnsSpoof))
 	for d := range dnsSpoof {
