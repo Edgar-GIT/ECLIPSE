@@ -10,7 +10,7 @@ teste
 
 # JSON files
 *.json
-
+report/
 # Report directories
 image_reports/
 osint_reports/
