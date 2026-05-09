@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -50,13 +51,74 @@ type OSINTStats struct {
 	TopTargets      []string
 }
 
-const (
-	osintResultsFile    = "target/osint_results.json"
-	osintReportsDir     = "target/osint_reports"
-	osintAPIKeysFile    = "target/osint_api_keys.json"
-	osintToolsDir       = "exec_tools"
-	legacyOSINTToolsDir = "target/osint_tools"
+var (
+	workspaceRootOnce sync.Once
+	workspaceRootVal  string
 )
+
+func workspaceRoot() string {
+	workspaceRootOnce.Do(initWorkspaceRoot)
+	return workspaceRootVal
+}
+
+func initWorkspaceRoot() {
+	if v := strings.TrimSpace(os.Getenv("ECLIPSE_ROOT")); v != "" {
+		workspaceRootVal = filepath.Clean(v)
+		return
+	}
+	seen := map[string]struct{}{}
+	tryRoots := func(start string) bool {
+		start = filepath.Clean(start)
+		if start == "" || start == "." {
+			return false
+		}
+		if _, dup := seen[start]; dup {
+			return false
+		}
+		seen[start] = struct{}{}
+		for dir := start; dir != filepath.Dir(dir); dir = filepath.Dir(dir) {
+			st, err := os.Stat(filepath.Join(dir, "go.mod"))
+			if err == nil && !st.IsDir() {
+				workspaceRootVal = dir
+				return true
+			}
+		}
+		return false
+	}
+	if wd, err := os.Getwd(); err == nil && tryRoots(wd) {
+		return
+	}
+	if exe, err := os.Executable(); err == nil {
+		if tryRoots(filepath.Dir(exe)) {
+			return
+		}
+	}
+	if wd, err := os.Getwd(); err == nil {
+		workspaceRootVal = wd
+		return
+	}
+	workspaceRootVal = "."
+}
+
+func pathOSINTResults() string {
+	return filepath.Join(workspaceRoot(), "target", "osint_results.json")
+}
+
+func pathOSINTReports() string {
+	return filepath.Join(workspaceRoot(), "target", "osint_reports")
+}
+
+func pathOSINTAPIKeys() string {
+	return filepath.Join(workspaceRoot(), "target", "osint_api_keys.json")
+}
+
+func pathExecTools() string {
+	return filepath.Join(workspaceRoot(), "exec_tools")
+}
+
+func pathLegacyOSINTTools() string {
+	return filepath.Join(workspaceRoot(), "target", "osint_tools")
+}
 
 var apiKeyHelpLinks = map[string]string{
 	"SHODAN_API_KEY": "https://account.shodan.io/",
@@ -172,9 +234,9 @@ func ipOSINTMenu(reader *bufio.Reader) {
 	for {
 		utils.ClearTerminal()
 		printOSINTHeader("IP Intelligence")
-		fmt.Printf("%s[1] Reverse DNS and web finder%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[2] Shodan InternetDB (no API key)%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[3] Shodan host lookup (CLI/API key)%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[1] Reverse DNS and web finder (IPv4 or hostname)%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[2] Shodan InternetDB (IPv4 or hostname)%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[3] Shodan host lookup / CLI (IPv4 or hostname)%s\n", utils.Green, utils.Reset)
 		fmt.Printf("%s[4] Whois lookup%s\n", utils.Green, utils.Reset)
 		fmt.Printf("%s[5] Back%s\n", utils.Yellow, utils.Reset)
 		fmt.Printf("\n%sOption: %s", utils.Green, utils.Reset)
@@ -185,22 +247,24 @@ func ipOSINTMenu(reader *bufio.Reader) {
 
 		switch input {
 		case "1":
-			target := askTarget(reader, "IPv4 address")
-			if !utils.IsValidIPv4(target) {
-				fmt.Printf("%sInvalid IPv4 format.%s\n", utils.Red, utils.Reset)
+			target := askTarget(reader, "IPv4 or hostname")
+			ip, err := firstIPv4ForOSINT(target)
+			if err != nil {
+				fmt.Printf("%s%s%s\n", utils.Red, err.Error(), utils.Reset)
 				utils.WaitForEnter(reader)
 				continue
 			}
-			runIPWebFinder(target)
+			runIPWebFinder(ip, target)
 			utils.WaitForEnter(reader)
 		case "2":
-			target := askTarget(reader, "IPv4 address")
-			if !utils.IsValidIPv4(target) {
-				fmt.Printf("%sInvalid IPv4 format.%s\n", utils.Red, utils.Reset)
+			target := askTarget(reader, "IPv4 or hostname")
+			ip, err := firstIPv4ForOSINT(target)
+			if err != nil {
+				fmt.Printf("%s%s%s\n", utils.Red, err.Error(), utils.Reset)
 				utils.WaitForEnter(reader)
 				continue
 			}
-			runShodanInternetDB(target)
+			runShodanInternetDB(ip, target)
 			utils.WaitForEnter(reader)
 		case "3":
 			if !ensureAPIKeysForOption(reader, "shodan-cli") || !ensurePythonPackageToolReady(reader, "shodan", "shodan") {
@@ -208,13 +272,14 @@ func ipOSINTMenu(reader *bufio.Reader) {
 				continue
 			}
 			ensureShodanCLIConfigured()
-			target := askTarget(reader, "IPv4 address")
-			if !utils.IsValidIPv4(target) {
-				fmt.Printf("%sInvalid IPv4 format.%s\n", utils.Red, utils.Reset)
+			target := askTarget(reader, "IPv4 or hostname")
+			ip, err := firstIPv4ForOSINT(target)
+			if err != nil {
+				fmt.Printf("%s%s%s\n", utils.Red, err.Error(), utils.Reset)
 				utils.WaitForEnter(reader)
 				continue
 			}
-			runOSINTCommand("shodan-cli", target, "shodan", []string{"host", target})
+			runOSINTCommand("shodan-cli", target, "shodan", []string{"host", ip})
 			utils.WaitForEnter(reader)
 		case "4":
 			if !ensureDependenciesForOSINTOption(reader, "whois") {
@@ -503,14 +568,14 @@ func runSubdomainEnum(target string) {
 }
 
 func runMaigretLookup(target string) {
-	args := []string{target, "-a", "--html"}
+	args := []string{"-a", "--html", target}
 
 	if isToolInstalled("maigret") {
 		runOSINTCommand("maigret", target, "maigret", args)
 		return
 	}
 
-	repoPath := filepath.Join(osintToolsDir, "maigret")
+	repoPath := filepath.Join(pathExecTools(), "maigret")
 	if dirExists(repoPath) {
 		if runLocalPythonModuleCommand("maigret", target, repoPath, "maigret", args) {
 			return
@@ -528,7 +593,7 @@ func runTheHarvester(target string) {
 		return
 	}
 
-	if runLocalPythonModuleCommand("theharvester", target, filepath.Join(osintToolsDir, "theHarvester"), "theHarvester", args) {
+	if runLocalPythonModuleCommand("theharvester", target, filepath.Join(pathExecTools(), "theHarvester"), "theHarvester", args) {
 		return
 	}
 
@@ -557,7 +622,7 @@ func runReconNG(target string) {
 		return
 	}
 
-	if runLocalPythonScriptCommand("recon-ng", target, filepath.Join(osintToolsDir, "recon-ng"), []string{"recon-ng", "recon-ng.py"}, []string{"-r", tmp}) {
+	if runLocalPythonScriptCommand("recon-ng", target, filepath.Join(pathExecTools(), "recon-ng"), []string{"recon-ng", "recon-ng.py"}, []string{"-r", tmp}) {
 		return
 	}
 
@@ -574,21 +639,24 @@ func runSpiderFootScan(target string) {
 		return
 	}
 
-	if runLocalPythonScriptCommand("spiderfoot", target, filepath.Join(osintToolsDir, "spiderfoot"), []string{"sf.py", "spiderfoot.py"}, []string{"-s", target, "-q"}) {
+	if runLocalPythonScriptCommand("spiderfoot", target, filepath.Join(pathExecTools(), "spiderfoot"), []string{"sf.py", "spiderfoot.py"}, []string{"-s", target, "-q"}) {
 		return
 	}
 
 	recordAndPrintError("spiderfoot", target, buildMissingToolMessage("spiderfoot"), time.Now())
 }
 
-func runShodanInternetDB(ip string) {
+func runShodanInternetDB(ip, label string) {
+	if strings.TrimSpace(label) == "" {
+		label = ip
+	}
 	start := time.Now()
 	endpoint := "https://internetdb.shodan.io/" + ip
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Get(endpoint)
 	if err != nil {
 		msg := fmt.Sprintf("InternetDB request failed: %v", err)
-		recordAndPrintError("shodan-internetdb", ip, msg, start)
+		recordAndPrintError("shodan-internetdb", label, msg, start)
 		return
 	}
 	defer resp.Body.Close()
@@ -596,22 +664,22 @@ func runShodanInternetDB(ip string) {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		msg := fmt.Sprintf("InternetDB read failed: %v", err)
-		recordAndPrintError("shodan-internetdb", ip, msg, start)
+		recordAndPrintError("shodan-internetdb", label, msg, start)
 		return
 	}
 
-	outFile, saveErr := saveOSINTOutput("shodan-internetdb", ip, body)
+	outFile, saveErr := saveOSINTOutput("shodan-internetdb", label, body)
 	if saveErr != nil {
 		msg := fmt.Sprintf("Failed to save output: %v", saveErr)
-		recordAndPrintError("shodan-internetdb", ip, msg, start)
+		recordAndPrintError("shodan-internetdb", label, msg, start)
 		return
 	}
 
 	rec := OSINTRecord{
 		Tool:            "shodan-internetdb",
-		Target:          ip,
+		Target:          label,
 		Status:          "ok",
-		Summary:         "InternetDB lookup completed.",
+		Summary:         "InternetDB lookup completed for " + ip + ".",
 		OutputFile:      outFile,
 		DurationSeconds: time.Since(start).Seconds(),
 		RanAt:           time.Now(),
@@ -631,14 +699,54 @@ type webProbeResult struct {
 	Error      string
 }
 
-func runIPWebFinder(ip string) {
+func firstIPv4ForOSINT(query string) (string, error) {
+	q := strings.TrimSpace(query)
+	if q == "" {
+		return "", errors.New("empty input")
+	}
+	if utils.IsValidIPv4(q) {
+		return q, nil
+	}
+	host := strings.Trim(q, `"'`)
+	if strings.Contains(host, "://") {
+		u, err := url.Parse(host)
+		if err != nil {
+			return "", err
+		}
+		if u.Host != "" {
+			host = u.Host
+		}
+	}
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	if host == "" {
+		return "", errors.New("could not parse hostname")
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return "", err
+	}
+	for _, ip := range ips {
+		if v4 := ip.To4(); v4 != nil {
+			return v4.String(), nil
+		}
+	}
+	return "", fmt.Errorf("no IPv4 address for %s", host)
+}
+
+func runIPWebFinder(resolvedIP, query string) {
 	start := time.Now()
+	if strings.TrimSpace(query) == "" {
+		query = resolvedIP
+	}
 	var report strings.Builder
 	report.WriteString("REVERSE DNS AND WEB FINDER\n")
-	report.WriteString("Target IP: " + ip + "\n")
+	report.WriteString("Input: " + query + "\n")
+	report.WriteString("Resolved IPv4: " + resolvedIP + "\n")
 	report.WriteString("Started: " + time.Now().Format("2006-01-02 15:04:05") + "\n\n")
 
-	ptrs, err := net.LookupAddr(ip)
+	ptrs, err := net.LookupAddr(resolvedIP)
 	if err != nil {
 		report.WriteString("Reverse DNS: no PTR records found (" + err.Error() + ")\n")
 	} else {
@@ -649,10 +757,10 @@ func runIPWebFinder(ip string) {
 		}
 	}
 
-	candidates := buildIPWebCandidates(ip, ptrs)
+	candidates := buildIPWebCandidates(resolvedIP, ptrs)
 	results := probeWebTargets(candidates, 7*time.Second)
 	writeWebProbeResults(&report, results)
-	saveWebFinderResult("reverse-web-finder", ip, report.String(), start, results)
+	saveWebFinderResult("reverse-web-finder", query, report.String(), start, results)
 }
 
 func runDomainWebFinder(domain string) {
@@ -1181,11 +1289,11 @@ func commandTimeoutForTool(toolName string) time.Duration {
 }
 
 func saveOSINTOutput(toolName, target string, data []byte) (string, error) {
-	if err := os.MkdirAll(osintReportsDir, 0755); err != nil {
+	if err := os.MkdirAll(pathOSINTReports(), 0755); err != nil {
 		return "", err
 	}
 	filename := buildOSINTOutputName(toolName, target, "txt")
-	fullPath := filepath.Join(osintReportsDir, filename)
+	fullPath := filepath.Join(pathOSINTReports(), filename)
 	if err := os.WriteFile(fullPath, data, 0644); err != nil {
 		return "", err
 	}
@@ -1225,7 +1333,7 @@ func recordAndPrintError(toolName, target, message string, start time.Time) {
 
 func recordOSINT(rec OSINTRecord) {
 	history := OSINTHistory{}
-	raw, err := os.ReadFile(osintResultsFile)
+	raw, err := os.ReadFile(pathOSINTResults())
 	if err == nil {
 		_ = json.Unmarshal(raw, &history)
 	}
@@ -1235,7 +1343,7 @@ func recordOSINT(rec OSINTRecord) {
 		fmt.Printf("%sCould not serialize OSINT history: %v%s\n", utils.Red, err, utils.Reset)
 		return
 	}
-	if err := os.WriteFile(osintResultsFile, data, 0644); err != nil {
+	if err := os.WriteFile(pathOSINTResults(), data, 0644); err != nil {
 		fmt.Printf("%sCould not save OSINT history: %v%s\n", utils.Red, err, utils.Reset)
 	}
 }
@@ -1244,7 +1352,7 @@ func viewOSINTHistory() {
 	utils.ClearTerminal()
 	fmt.Printf("\n%s=== OSINT HISTORY ===%s\n\n", utils.Blue, utils.Reset)
 
-	data, err := os.ReadFile(osintResultsFile)
+	data, err := os.ReadFile(pathOSINTResults())
 	if err != nil {
 		fmt.Printf("%sNo OSINT history found.%s\n", utils.Red, utils.Reset)
 		return
@@ -1479,7 +1587,7 @@ func manageAPIKeys(reader *bufio.Reader) {
 		}
 		fmt.Printf("%sAPI keys updated.%s\n", utils.Green, utils.Reset)
 	case "2":
-		if err := os.Remove(osintAPIKeysFile); err != nil && !os.IsNotExist(err) {
+		if err := os.Remove(pathOSINTAPIKeys()); err != nil && !os.IsNotExist(err) {
 			fmt.Printf("%sFailed to clear key store: %v%s\n", utils.Red, err, utils.Reset)
 			return
 		}
@@ -1493,7 +1601,7 @@ func manageAPIKeys(reader *bufio.Reader) {
 }
 
 func loadAPIKeyStore() map[string]string {
-	data, err := os.ReadFile(osintAPIKeysFile)
+	data, err := os.ReadFile(pathOSINTAPIKeys())
 	if err != nil {
 		return map[string]string{}
 	}
@@ -1509,7 +1617,7 @@ func saveAPIKeyStore(store map[string]string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(osintAPIKeysFile, data, 0600)
+	return os.WriteFile(pathOSINTAPIKeys(), data, 0600)
 }
 
 func loadStoredAPIKeysIntoEnv() {
@@ -1529,13 +1637,13 @@ type localToolSpec struct {
 }
 
 func ensureExecToolsDir() {
-	if dirExists(legacyOSINTToolsDir) && !dirExists(osintToolsDir) {
-		if err := os.Rename(legacyOSINTToolsDir, osintToolsDir); err != nil {
-			fmt.Printf("%sCould not migrate %s to %s: %v%s\n", utils.Yellow, legacyOSINTToolsDir, osintToolsDir, err, utils.Reset)
+	if dirExists(pathLegacyOSINTTools()) && !dirExists(pathExecTools()) {
+		if err := os.Rename(pathLegacyOSINTTools(), pathExecTools()); err != nil {
+			fmt.Printf("%sCould not migrate %s to %s: %v%s\n", utils.Yellow, pathLegacyOSINTTools(), pathExecTools(), err, utils.Reset)
 		}
 	}
-	if err := os.MkdirAll(osintToolsDir, 0755); err != nil {
-		fmt.Printf("%sCould not create %s: %v%s\n", utils.Red, osintToolsDir, err, utils.Reset)
+	if err := os.MkdirAll(pathExecTools(), 0755); err != nil {
+		fmt.Printf("%sCould not create %s: %v%s\n", utils.Red, pathExecTools(), err, utils.Reset)
 	}
 }
 
@@ -1571,7 +1679,7 @@ func ensureLocalOrGlobalToolReady(reader *bufio.Reader, tool string) bool {
 
 	repoPath := toolLocalRepoPath(spec.Key)
 	if !dirExists(repoPath) {
-		fmt.Printf("%s%s is not installed globally and was not found in %s.%s\n", utils.Yellow, spec.DisplayName, osintToolsDir, utils.Reset)
+		fmt.Printf("%s%s is not installed globally and was not found in %s.%s\n", utils.Yellow, spec.DisplayName, pathExecTools(), utils.Reset)
 		if !promptYesNo(reader, "Download it into "+repoPath+" now?") {
 			fmt.Printf("%sCancelled. %s needs to be installed before this option can run.%s\n", utils.Yellow, spec.DisplayName, utils.Reset)
 			return false
@@ -1612,6 +1720,11 @@ func localPythonToolReady(tool string) bool {
 
 func cloneLocalTool(spec localToolSpec) bool {
 	ensureExecToolsDir()
+	base := pathExecTools()
+	if !isDirWritable(base) {
+		fmt.Printf("%sCannot write to %s (ownership or permissions).%s\n", utils.Red, base, utils.Reset)
+		return false
+	}
 	repoPath := toolLocalRepoPath(spec.Key)
 	if dirExists(repoPath) {
 		return true
@@ -1629,6 +1742,10 @@ func setupLocalPythonTool(spec localToolSpec) bool {
 	repoPath := toolLocalRepoPath(spec.Key)
 	if !dirExists(repoPath) {
 		fmt.Printf("%sLocal repository not found: %s%s\n", utils.Red, repoPath, utils.Reset)
+		return false
+	}
+	if !isDirWritable(repoPath) {
+		fmt.Printf("%sCannot write inside %s (fix ownership; avoid cloning OSINT tools as root).%s\n", utils.Red, repoPath, utils.Reset)
 		return false
 	}
 
@@ -1725,7 +1842,7 @@ func setupRecommendedLocalTools(reader *bufio.Reader) {
 }
 
 func printOSINTToolStatus() {
-	fmt.Printf("%sTool directory:%s %s\n\n", utils.Green, utils.Reset, osintToolsDir)
+	fmt.Printf("%sTool directory:%s %s\n\n", utils.Green, utils.Reset, pathExecTools())
 	for _, spec := range localOSINTToolSpecs() {
 		repoPath := toolLocalRepoPath(spec.Key)
 		status := "missing"
@@ -2217,7 +2334,7 @@ func topCounts(counts map[string]int, n int) []string {
 }
 
 func loadOSINTHistory() (*OSINTHistory, error) {
-	data, err := os.ReadFile(osintResultsFile)
+	data, err := os.ReadFile(pathOSINTResults())
 	if err != nil {
 		return nil, err
 	}
@@ -2346,15 +2463,15 @@ func printOSINTOutputPreview(tool string, output []byte) {
 }
 
 func deleteAllOSINTData() {
-	if err := os.Remove(osintResultsFile); err != nil && !os.IsNotExist(err) {
-		fmt.Printf("%sFailed to delete %s: %v%s\n", utils.Red, osintResultsFile, err, utils.Reset)
+	if err := os.Remove(pathOSINTResults()); err != nil && !os.IsNotExist(err) {
+		fmt.Printf("%sFailed to delete %s: %v%s\n", utils.Red, pathOSINTResults(), err, utils.Reset)
 		return
 	}
-	if err := os.RemoveAll(osintReportsDir); err != nil && !os.IsNotExist(err) {
-		fmt.Printf("%sFailed to delete %s: %v%s\n", utils.Red, osintReportsDir, err, utils.Reset)
+	if err := os.RemoveAll(pathOSINTReports()); err != nil && !os.IsNotExist(err) {
+		fmt.Printf("%sFailed to delete %s: %v%s\n", utils.Red, pathOSINTReports(), err, utils.Reset)
 		return
 	}
-	if err := os.MkdirAll(osintReportsDir, 0755); err != nil {
+	if err := os.MkdirAll(pathOSINTReports(), 0755); err != nil {
 		fmt.Printf("%sFailed to recreate reports directory: %v%s\n", utils.Red, err, utils.Reset)
 		return
 	}
@@ -2594,11 +2711,22 @@ func extractReadableTextFromHTML(content string) string {
 	return normalizeWhitespace(plain)
 }
 
+func resolveFileExecutablePath(p string) (string, error) {
+	info, err := os.Stat(p)
+	if err != nil {
+		return "", err
+	}
+	if info.IsDir() {
+		return "", errors.New("is directory")
+	}
+	return filepath.Clean(p), nil
+}
+
 func resolveToolPath(name string) (string, error) {
 	for _, candidateName := range toolNameCandidates(name) {
 		if strings.ContainsRune(candidateName, os.PathSeparator) {
-			if _, err := os.Stat(candidateName); err == nil {
-				return candidateName, nil
+			if p, err := resolveFileExecutablePath(candidateName); err == nil {
+				return p, nil
 			}
 		}
 
@@ -2609,15 +2737,19 @@ func resolveToolPath(name string) (string, error) {
 		for _, dir := range commonToolSearchDirs() {
 			candidate := filepath.Join(dir, candidateName)
 			if runtime.GOOS == "windows" {
-				exts := []string{".exe", ".cmd", ".bat", ".ps1"}
-				for _, ext := range exts {
-					if _, err := os.Stat(candidate + ext); err == nil {
-						return candidate + ext, nil
+				winCandidates := []string{candidate}
+				for _, ext := range []string{".exe", ".cmd", ".bat", ".ps1"} {
+					winCandidates = append(winCandidates, candidate+ext)
+				}
+				for _, c := range winCandidates {
+					if p, err := resolveFileExecutablePath(c); err == nil {
+						return p, nil
 					}
 				}
+				continue
 			}
-			if _, err := os.Stat(candidate); err == nil {
-				return candidate, nil
+			if p, err := resolveFileExecutablePath(candidate); err == nil {
+				return p, nil
 			}
 		}
 	}
@@ -2984,13 +3116,13 @@ func repoVenvPythonCmd(repoPath string) string {
 func toolLocalRepoPath(tool string) string {
 	switch normalizeToolKey(tool) {
 	case "maigret":
-		return filepath.Join(osintToolsDir, "maigret")
+		return filepath.Join(pathExecTools(), "maigret")
 	case "theharvester":
-		return filepath.Join(osintToolsDir, "theHarvester")
+		return filepath.Join(pathExecTools(), "theHarvester")
 	case "recon-ng":
-		return filepath.Join(osintToolsDir, "recon-ng")
+		return filepath.Join(pathExecTools(), "recon-ng")
 	case "spiderfoot":
-		return filepath.Join(osintToolsDir, "spiderfoot")
+		return filepath.Join(pathExecTools(), "spiderfoot")
 	default:
 		return ""
 	}
@@ -3134,4 +3266,17 @@ func dirExists(path string) bool {
 	}
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
+}
+
+func isDirWritable(dir string) bool {
+	if !dirExists(dir) {
+		return false
+	}
+	f, err := os.CreateTemp(dir, ".eclipse-w-*")
+	if err != nil {
+		return false
+	}
+	_ = f.Close()
+	_ = os.Remove(f.Name())
+	return true
 }
