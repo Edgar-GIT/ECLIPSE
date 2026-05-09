@@ -124,6 +124,11 @@ var apiKeyHelpLinks = map[string]string{
 	"SHODAN_API_KEY": "https://account.shodan.io/",
 }
 
+var (
+	osintDomainHostRegexp = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]+\.[a-z]{2,}$`)
+	osintEmailRegexp      = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
+)
+
 func OSINTToolkit() {
 	reader := bufio.NewReader(os.Stdin)
 	loadStoredAPIKeysIntoEnv()
@@ -234,9 +239,9 @@ func ipOSINTMenu(reader *bufio.Reader) {
 	for {
 		utils.ClearTerminal()
 		printOSINTHeader("IP Intelligence")
-		fmt.Printf("%s[1] Reverse DNS and web finder (IPv4 or hostname)%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[2] Shodan InternetDB (IPv4 or hostname)%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[3] Shodan host lookup / CLI (IPv4 or hostname)%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[1] Reverse DNS and web finder (hostname, IP, or URL)%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[2] Shodan InternetDB (hostname, IP, or URL)%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[3] Shodan host lookup / CLI (hostname, IP, or URL)%s\n", utils.Green, utils.Reset)
 		fmt.Printf("%s[4] Whois lookup%s\n", utils.Green, utils.Reset)
 		fmt.Printf("%s[5] Back%s\n", utils.Yellow, utils.Reset)
 		fmt.Printf("\n%sOption: %s", utils.Green, utils.Reset)
@@ -247,8 +252,8 @@ func ipOSINTMenu(reader *bufio.Reader) {
 
 		switch input {
 		case "1":
-			target := askTarget(reader, "IPv4 or hostname")
-			ip, err := firstIPv4ForOSINT(target)
+			target := askTarget(reader, "Hostname, IP, or URL")
+			ip, err := resolvedIPForOSINT(target)
 			if err != nil {
 				fmt.Printf("%s%s%s\n", utils.Red, err.Error(), utils.Reset)
 				utils.WaitForEnter(reader)
@@ -257,8 +262,8 @@ func ipOSINTMenu(reader *bufio.Reader) {
 			runIPWebFinder(ip, target)
 			utils.WaitForEnter(reader)
 		case "2":
-			target := askTarget(reader, "IPv4 or hostname")
-			ip, err := firstIPv4ForOSINT(target)
+			target := askTarget(reader, "Hostname, IP, or URL")
+			ip, err := resolvedIPForOSINT(target)
 			if err != nil {
 				fmt.Printf("%s%s%s\n", utils.Red, err.Error(), utils.Reset)
 				utils.WaitForEnter(reader)
@@ -272,8 +277,8 @@ func ipOSINTMenu(reader *bufio.Reader) {
 				continue
 			}
 			ensureShodanCLIConfigured()
-			target := askTarget(reader, "IPv4 or hostname")
-			ip, err := firstIPv4ForOSINT(target)
+			target := askTarget(reader, "Hostname, IP, or URL")
+			ip, err := resolvedIPForOSINT(target)
 			if err != nil {
 				fmt.Printf("%s%s%s\n", utils.Red, err.Error(), utils.Reset)
 				utils.WaitForEnter(reader)
@@ -286,13 +291,19 @@ func ipOSINTMenu(reader *bufio.Reader) {
 				utils.WaitForEnter(reader)
 				continue
 			}
-			target := askTarget(reader, "Domain or IP")
-			if target == "" {
+			raw := askTarget(reader, "Domain, IP, or URL")
+			if raw == "" {
 				fmt.Printf("%sTarget is required.%s\n", utils.Red, utils.Reset)
 				utils.WaitForEnter(reader)
 				continue
 			}
-			runOSINTCommand("whois", target, "whois", []string{target})
+			q, err := normalizeOSINTHostInput(raw)
+			if err != nil {
+				fmt.Printf("%s%s%s\n", utils.Red, err.Error(), utils.Reset)
+				utils.WaitForEnter(reader)
+				continue
+			}
+			runOSINTCommand("whois", q, "whois", []string{q})
 			utils.WaitForEnter(reader)
 		case "5":
 			return
@@ -338,11 +349,11 @@ func domainOSINTMenu(reader *bufio.Reader) {
 	for {
 		utils.ClearTerminal()
 		printOSINTHeader("Domain and Website Intelligence")
-		fmt.Printf("%s[1] DNS records (A/AAAA/MX/TXT/NS/PTR)%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[2] Website finder and IP mapping%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[3] Passive subdomain enum%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[4] TheHarvester domain recon%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[5] Whois lookup%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[1] DNS records (A/AAAA/MX/TXT/NS; reverse if IP)%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[2] Website finder and IP mapping (domain, IP, or URL)%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[3] Passive subdomain enum (domain name)%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[4] TheHarvester domain recon (domain name)%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[5] Whois lookup (domain, IP, or URL)%s\n", utils.Green, utils.Reset)
 		fmt.Printf("%s[6] Back%s\n", utils.Yellow, utils.Reset)
 		fmt.Printf("\n%sOption: %s", utils.Green, utils.Reset)
 		input, ok := readMenuInput(reader)
@@ -356,7 +367,7 @@ func domainOSINTMenu(reader *bufio.Reader) {
 				utils.WaitForEnter(reader)
 				continue
 			}
-			target := askDomainTarget(reader)
+			target := askHostOrDomainTarget(reader)
 			if target == "" {
 				utils.WaitForEnter(reader)
 				continue
@@ -364,19 +375,23 @@ func domainOSINTMenu(reader *bufio.Reader) {
 			runDNSRecon(target)
 			utils.WaitForEnter(reader)
 		case "2":
-			target := askDomainTarget(reader)
+			target := askHostOrDomainTarget(reader)
 			if target == "" {
 				utils.WaitForEnter(reader)
 				continue
 			}
-			runDomainWebFinder(target)
+			if isIPAddressString(target) {
+				runIPWebFinder(target, target)
+			} else {
+				runDomainWebFinder(target)
+			}
 			utils.WaitForEnter(reader)
 		case "3":
 			if !ensureSubdomainToolReady(reader) {
 				utils.WaitForEnter(reader)
 				continue
 			}
-			target := askDomainTarget(reader)
+			target := askDomainNameTarget(reader)
 			if target == "" {
 				utils.WaitForEnter(reader)
 				continue
@@ -388,7 +403,7 @@ func domainOSINTMenu(reader *bufio.Reader) {
 				utils.WaitForEnter(reader)
 				continue
 			}
-			target := askDomainTarget(reader)
+			target := askDomainNameTarget(reader)
 			if target == "" {
 				utils.WaitForEnter(reader)
 				continue
@@ -400,7 +415,7 @@ func domainOSINTMenu(reader *bufio.Reader) {
 				utils.WaitForEnter(reader)
 				continue
 			}
-			target := askDomainTarget(reader)
+			target := askHostOrDomainTarget(reader)
 			if target == "" {
 				utils.WaitForEnter(reader)
 				continue
@@ -420,8 +435,8 @@ func frameworksOSINTMenu(reader *bufio.Reader) {
 	for {
 		utils.ClearTerminal()
 		printOSINTHeader("Full OSINT Frameworks")
-		fmt.Printf("%s[1] Recon-ng quick module run%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[2] SpiderFoot quick scan%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[1] Recon-ng quick module run (domain name)%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[2] SpiderFoot quick scan (domain, IP, or URL)%s\n", utils.Green, utils.Reset)
 		fmt.Printf("%s[3] Maigret username lookup%s\n", utils.Green, utils.Reset)
 		fmt.Printf("%s[4] Back%s\n", utils.Yellow, utils.Reset)
 		fmt.Printf("\n%sOption: %s", utils.Green, utils.Reset)
@@ -436,7 +451,7 @@ func frameworksOSINTMenu(reader *bufio.Reader) {
 				utils.WaitForEnter(reader)
 				continue
 			}
-			target := askDomainTarget(reader)
+			target := askDomainNameTarget(reader)
 			if target == "" {
 				utils.WaitForEnter(reader)
 				continue
@@ -448,9 +463,15 @@ func frameworksOSINTMenu(reader *bufio.Reader) {
 				utils.WaitForEnter(reader)
 				continue
 			}
-			target := askTarget(reader, "Domain or IP")
-			if target == "" {
+			raw := askTarget(reader, "Domain, IP, or URL")
+			if raw == "" {
 				fmt.Printf("%sTarget is required.%s\n", utils.Red, utils.Reset)
+				utils.WaitForEnter(reader)
+				continue
+			}
+			target, err := normalizeOSINTHostInput(raw)
+			if err != nil {
+				fmt.Printf("%s%s%s\n", utils.Red, err.Error(), utils.Reset)
 				utils.WaitForEnter(reader)
 				continue
 			}
@@ -512,13 +533,36 @@ func setupOSINTToolsMenu(reader *bufio.Reader) {
 	}
 }
 
-func askDomainTarget(reader *bufio.Reader) string {
-	target := askTarget(reader, "Domain")
-	if !isLikelyDomain(target) {
-		fmt.Printf("%sInvalid domain format.%s\n", utils.Red, utils.Reset)
+func askHostOrDomainTarget(reader *bufio.Reader) string {
+	raw := askTarget(reader, "Domain, IP, or URL")
+	if raw == "" {
 		return ""
 	}
-	return target
+	norm, err := normalizeOSINTHostInput(raw)
+	if err != nil {
+		fmt.Printf("%s%s%s\n", utils.Red, err.Error(), utils.Reset)
+		return ""
+	}
+	if isIPAddressString(norm) {
+		return norm
+	}
+	if isLikelyDomain(norm) {
+		return norm
+	}
+	fmt.Printf("%sInvalid domain or host name.%s\n", utils.Red, utils.Reset)
+	return ""
+}
+
+func askDomainNameTarget(reader *bufio.Reader) string {
+	t := askHostOrDomainTarget(reader)
+	if t == "" {
+		return ""
+	}
+	if isIPAddressString(t) {
+		fmt.Printf("%sA domain name is required (not an IP address).%s\n", utils.Red, utils.Reset)
+		return ""
+	}
+	return t
 }
 
 func askTarget(reader *bufio.Reader, label string) string {
@@ -537,13 +581,21 @@ func readMenuInput(reader *bufio.Reader) (string, bool) {
 }
 
 func runDNSRecon(target string) {
+	if ip := net.ParseIP(target); ip != nil {
+		ipStr := ip.String()
+		if isToolInstalled("dig") {
+			runOSINTCommand("dns-ptr", target, "dig", []string{"+short", "-x", ipStr})
+			return
+		}
+		runOSINTCommand("dns-ptr", target, "nslookup", []string{ipStr})
+		return
+	}
 	if isToolInstalled("dig") {
 		runOSINTCommand("dns-a", target, "dig", []string{"+short", "A", target})
 		runOSINTCommand("dns-aaaa", target, "dig", []string{"+short", "AAAA", target})
 		runOSINTCommand("dns-mx", target, "dig", []string{"+short", "MX", target})
 		runOSINTCommand("dns-txt", target, "dig", []string{"+short", "TXT", target})
 		runOSINTCommand("dns-ns", target, "dig", []string{"+short", "NS", target})
-		runOSINTCommand("dns-ptr", target, "dig", []string{"+short", "-x", target})
 		return
 	}
 	runOSINTCommand("dns-a", target, "nslookup", []string{"-type=A", target})
@@ -551,7 +603,6 @@ func runDNSRecon(target string) {
 	runOSINTCommand("dns-mx", target, "nslookup", []string{"-type=MX", target})
 	runOSINTCommand("dns-txt", target, "nslookup", []string{"-type=TXT", target})
 	runOSINTCommand("dns-ns", target, "nslookup", []string{"-type=NS", target})
-	runOSINTCommand("dns-ptr", target, "nslookup", []string{"-type=PTR", target})
 }
 
 func runSubdomainEnum(target string) {
@@ -651,7 +702,7 @@ func runShodanInternetDB(ip, label string) {
 		label = ip
 	}
 	start := time.Now()
-	endpoint := "https://internetdb.shodan.io/" + ip
+	endpoint := "https://internetdb.shodan.io/" + url.PathEscape(ip)
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Get(endpoint)
 	if err != nil {
@@ -699,40 +750,87 @@ type webProbeResult struct {
 	Error      string
 }
 
-func firstIPv4ForOSINT(query string) (string, error) {
-	q := strings.TrimSpace(query)
+func normalizeOSINTHostInput(raw string) (string, error) {
+	q := strings.TrimSpace(raw)
 	if q == "" {
 		return "", errors.New("empty input")
 	}
+	q = strings.Trim(q, `"'`)
 	if utils.IsValidIPv4(q) {
 		return q, nil
 	}
-	host := strings.Trim(q, `"'`)
-	if strings.Contains(host, "://") {
-		u, err := url.Parse(host)
+	if ip := net.ParseIP(strings.Trim(q, "[]")); ip != nil {
+		return ip.String(), nil
+	}
+	if strings.Contains(q, "://") {
+		u, err := url.Parse(q)
 		if err != nil {
 			return "", err
 		}
 		if u.Host != "" {
-			host = u.Host
+			q = u.Host
 		}
 	}
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
+	if h, _, err := net.SplitHostPort(q); err == nil {
+		q = h
 	}
-	if host == "" {
-		return "", errors.New("could not parse hostname")
+	q = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(q)), ".")
+	if q == "" {
+		return "", errors.New("could not parse host")
 	}
-	ips, err := net.LookupIP(host)
+	if utils.IsValidIPv4(q) {
+		return q, nil
+	}
+	if ip := net.ParseIP(q); ip != nil {
+		return ip.String(), nil
+	}
+	return q, nil
+}
+
+func isIPAddressString(s string) bool {
+	if utils.IsValidIPv4(s) {
+		return true
+	}
+	return net.ParseIP(s) != nil
+}
+
+func resolvedIPForOSINT(query string) (string, error) {
+	norm, err := normalizeOSINTHostInput(query)
 	if err != nil {
 		return "", err
 	}
-	for _, ip := range ips {
-		if v4 := ip.To4(); v4 != nil {
+	if utils.IsValidIPv4(norm) {
+		return norm, nil
+	}
+	if ip := net.ParseIP(norm); ip != nil {
+		return ip.String(), nil
+	}
+	ips, err := net.LookupIP(norm)
+	if err != nil {
+		return "", err
+	}
+	for _, ipa := range ips {
+		if v4 := ipa.To4(); v4 != nil {
 			return v4.String(), nil
 		}
 	}
-	return "", fmt.Errorf("no IPv4 address for %s", host)
+	for _, ipa := range ips {
+		if ipa.To4() == nil {
+			return ipa.String(), nil
+		}
+	}
+	return "", fmt.Errorf("no IP address for %s", norm)
+}
+
+func ipBracketedForURL(ipStr string) string {
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return ipStr
+	}
+	if ip.To4() != nil {
+		return ip.String()
+	}
+	return "[" + ip.String() + "]"
 }
 
 func runIPWebFinder(resolvedIP, query string) {
@@ -743,7 +841,7 @@ func runIPWebFinder(resolvedIP, query string) {
 	var report strings.Builder
 	report.WriteString("REVERSE DNS AND WEB FINDER\n")
 	report.WriteString("Input: " + query + "\n")
-	report.WriteString("Resolved IPv4: " + resolvedIP + "\n")
+	report.WriteString("Resolved IP: " + resolvedIP + "\n")
 	report.WriteString("Started: " + time.Now().Format("2006-01-02 15:04:05") + "\n\n")
 
 	ptrs, err := net.LookupAddr(resolvedIP)
@@ -923,7 +1021,8 @@ func normalizeHostnames(values []string) []string {
 }
 
 func buildIPWebCandidates(ip string, ptrs []string) []string {
-	candidates := []string{"https://" + ip, "http://" + ip}
+	lit := ipBracketedForURL(ip)
+	candidates := []string{"https://" + lit, "http://" + lit}
 	for _, host := range ptrs {
 		candidates = append(candidates, "https://"+host, "http://"+host)
 	}
@@ -936,9 +1035,8 @@ func buildDomainWebCandidates(domain string, ips []string) []string {
 		candidates = append(candidates, "https://www."+domain, "http://www."+domain)
 	}
 	for _, ip := range ips {
-		if utils.IsValidIPv4(ip) {
-			candidates = append(candidates, "https://"+ip, "http://"+ip)
-		}
+		lit := ipBracketedForURL(ip)
+		candidates = append(candidates, "https://"+lit, "http://"+lit)
 	}
 	return dedupeKeepOrder(limitStrings(candidates, 12))
 }
@@ -1404,16 +1502,14 @@ func isLikelyDomain(v string) bool {
 	if v == "" || strings.Contains(v, " ") || strings.Contains(v, "@") {
 		return false
 	}
-	if utils.IsValidIPv4(v) {
+	if utils.IsValidIPv4(v) || net.ParseIP(v) != nil {
 		return false
 	}
-	re := regexp.MustCompile(`^[a-z0-9][a-z0-9.-]+\.[a-z]{2,}$`)
-	return re.MatchString(v)
+	return osintDomainHostRegexp.MatchString(v)
 }
 
 func isLikelyEmail(v string) bool {
-	re := regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
-	return re.MatchString(strings.TrimSpace(v))
+	return osintEmailRegexp.MatchString(strings.TrimSpace(v))
 }
 
 func ensureDependenciesForOSINTOption(reader *bufio.Reader, option string) bool {
