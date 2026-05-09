@@ -55,10 +55,7 @@ func loadDecryptionKey() ([]byte, error) {
 }
 
 func getKeyFilePath() string {
-	if isWindowsDecrypt {
-		return os.Getenv("APPDATA") + "\\decryption_key.txt"
-	}
-	return "/tmp/.decryption_key"
+	return victimDecryptionKeyPath()
 }
 
 func decryptAllFiles(key []byte) {

