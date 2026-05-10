@@ -110,7 +110,6 @@ func barLineTw(tw int, label string, pct float64, useColor bool) string {
 		label = "Usage"
 	}
 	prefix := " " + label + " "
-	// Keep room for suffix (" 100.0%") and avoid terminal edge wrapping.
 	barW := tw - len([]rune(prefix)) - 10
 	if barW < 12 {
 		barW = 12

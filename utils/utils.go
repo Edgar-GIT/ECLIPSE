@@ -20,7 +20,6 @@ const (
 	Reset  = "\033[0m"
 )
 
-// Discord Configuration
 var (
 	DiscordBotToken string
 	DiscordGuildID  string
@@ -186,12 +185,6 @@ func IsValidIPv4(ip string) bool {
 	parsed := net.ParseIP(strings.TrimSpace(ip))
 	return parsed != nil && parsed.To4() != nil
 }
-
-// ============================================
-// SYSTEM INFORMATION FUNCTIONS
-// ============================================
-
-// GetHostname retrieves the system hostname
 func GetHostname() string {
 	hostname, err := os.Hostname()
 	if err != nil {
@@ -200,12 +193,10 @@ func GetHostname() string {
 	return hostname
 }
 
-// GetOS returns the operating system and architecture
 func GetOS() string {
 	return runtime.GOOS + " " + runtime.GOARCH
 }
 
-// GetUsername retrieves the current username
 func GetUsername() string {
 	user := os.Getenv("USER")
 	if user == "" {
@@ -217,11 +208,6 @@ func GetUsername() string {
 	return user
 }
 
-// ============================================
-// STRING SANITIZATION FUNCTIONS
-// ============================================
-
-// SanitizeString removes non-printable characters
 func SanitizeString(raw []byte) string {
 	if len(raw) == 0 {
 		return ""
@@ -238,7 +224,6 @@ func SanitizeString(raw []byte) string {
 	return clean
 }
 
-// SanitizeChannelName sanitizes a string for use as a Discord channel name
 func SanitizeChannelName(name string) string {
 	name = strings.ToLower(name)
 	name = strings.ReplaceAll(name, " ", "-")
@@ -260,7 +245,6 @@ func SanitizeChannelName(name string) string {
 	return final
 }
 
-// SanitizeForFilename sanitizes a string for use as a filename
 func SanitizeForFilename(v string) string {
 	for _, ch := range []string{"<", ">", ":", "\"", "/", "\\", "|", "?", "*", "\x00"} {
 		v = strings.ReplaceAll(v, ch, "_")
@@ -268,7 +252,6 @@ func SanitizeForFilename(v string) string {
 	return v
 }
 
-// SanitizeLogName creates a safe name for log files
 func SanitizeLogName(input string) string {
 	safe := strings.Map(func(r rune) rune {
 		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
@@ -278,12 +261,6 @@ func SanitizeLogName(input string) string {
 	}, input)
 	return safe
 }
-
-// ============================================
-// FILE OPERATIONS
-// ============================================
-
-// CopyFile copies a file from src to dst
 func CopyFile(src, dst string) error {
 	input, err := os.ReadFile(src)
 	if err != nil {
@@ -292,7 +269,6 @@ func CopyFile(src, dst string) error {
 	return os.WriteFile(dst, input, 0644)
 }
 
-// CopyFileWithPermissions copies a file with specific permissions
 func CopyFileWithPermissions(src, dst string, perm os.FileMode) error {
 	input, err := os.ReadFile(src)
 	if err != nil {
@@ -301,11 +277,6 @@ func CopyFileWithPermissions(src, dst string, perm os.FileMode) error {
 	return os.WriteFile(dst, input, perm)
 }
 
-// ============================================
-// DISCORD CONFIGURATION
-// ============================================
-
-// EnsureDiscordConfig ensures Discord bot credentials are configured
 func EnsureDiscordConfig() error {
 	discordConfigOnce.Do(func() {
 		token := strings.TrimSpace(os.Getenv("DISCORD_BOT_TOKEN"))
@@ -334,12 +305,6 @@ func EnsureDiscordConfig() error {
 
 	return discordConfigErr
 }
-
-// ============================================
-// NETWORK UTILITIES
-// ============================================
-
-// GetHostnameFromIP attempts to get hostname from IP address
 func GetHostnameFromIP(ip string) string {
 	addrs, err := net.LookupAddr(ip)
 	if err != nil {
@@ -350,12 +315,6 @@ func GetHostnameFromIP(ip string) string {
 	}
 	return ip
 }
-
-// ============================================
-// COMMAND EXECUTION UTILITIES
-// ============================================
-
-// ExecuteCommand runs a shell command and returns output
 func ExecuteCommand(command string) string {
 	var cmd *exec.Cmd
 
@@ -373,12 +332,6 @@ func ExecuteCommand(command string) string {
 
 	return string(output)
 }
-
-// ============================================
-// MENU UTILITIES
-// ============================================
-
-// PrintReturnOption prints a styled "Return to Main Menu" option
 func PrintReturnOption(optionNumber string) {
 	fmt.Printf("%s  [%s] Return to Main Menu%s\n", Yellow, optionNumber, Reset)
 }
