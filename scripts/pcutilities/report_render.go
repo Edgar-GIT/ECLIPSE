@@ -104,6 +104,23 @@ func barRGB(globalPct, segT float64) (int, int, int) {
 	return r, g, bl
 }
 
+func barLineTw(tw int, label string, pct float64, useColor bool) string {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		label = "Usage"
+	}
+	prefix := " " + label + " "
+	// Keep room for suffix (" 100.0%") and avoid terminal edge wrapping.
+	barW := tw - len([]rune(prefix)) - 10
+	if barW < 12 {
+		barW = 12
+	}
+	if useColor {
+		return prefix + rgbBarPct(pct, barW, true) + "\n"
+	}
+	return prefix + rgbBarPct(pct, barW, false) + "\n"
+}
+
 func boxTopTw(tw int, title string, useColor bool) string {
 	horiz := tw - 2
 	top := "╔" + strings.Repeat("═", horiz) + "╗"
@@ -300,11 +317,6 @@ func RenderReportText(r *SystemReport, useColor bool) string {
 	}
 	o.WriteString("\n\n")
 
-	barW := tw - 24
-	if barW < 24 {
-		barW = 24
-	}
-
 	var hostRows [][2]string
 	hostRows = append(hostRows, [2]string{"Hostname", r.Hostname})
 	hostRows = append(hostRows, [2]string{"OS", r.OS})
@@ -385,11 +397,8 @@ func RenderReportText(r *SystemReport, useColor bool) string {
 	}
 	o.WriteString(tableKeyValueTw(tw, "Processor (CPU)", cpuRows, useColor))
 	o.WriteString("\n")
-	if useColor {
-		o.WriteString(" " + clrAccent("CPU load ") + rgbBarPct(r.CPUUsagePct, barW, useColor) + "\n\n")
-	} else {
-		o.WriteString(" CPU load " + rgbBarPct(r.CPUUsagePct, barW, false) + "\n\n")
-	}
+	o.WriteString(barLineTw(tw, "CPU load", r.CPUUsagePct, useColor))
+	o.WriteByte('\n')
 
 	gpuList := r.GPUNames
 	if len(gpuList) == 0 {
@@ -414,11 +423,8 @@ func RenderReportText(r *SystemReport, useColor bool) string {
 	}
 	o.WriteString(tableKeyValueTw(tw, "Memory (RAM)", memRows, useColor))
 	o.WriteString("\n")
-	if useColor {
-		o.WriteString(" " + clrAccent("RAM usage ") + rgbBarPct(r.RAMUsedPct, barW, useColor) + "\n\n")
-	} else {
-		o.WriteString(" RAM usage " + rgbBarPct(r.RAMUsedPct, barW, false) + "\n\n")
-	}
+	o.WriteString(barLineTw(tw, "RAM usage", r.RAMUsedPct, useColor))
+	o.WriteByte('\n')
 
 	var storRows [][2]string
 	storRows = append(storRows, [2]string{"Aggregate capacity", formatBytes(r.DiskTotalBytes)})
@@ -433,11 +439,8 @@ func RenderReportText(r *SystemReport, useColor bool) string {
 	storRows = append(storRows, [2]string{"Volume used %", fmt.Sprintf("%.1f%% (free %.1f%%)", pctUsed, pctFree)})
 	o.WriteString(tableKeyValueTw(tw, "Storage (all mounted volumes)", storRows, useColor))
 	o.WriteString("\n")
-	if useColor {
-		o.WriteString(" " + clrAccent("Disk used (total) ") + rgbBarPct(pctUsed, barW, useColor) + "\n\n")
-	} else {
-		o.WriteString(" Disk used (total) " + rgbBarPct(pctUsed, barW, false) + "\n\n")
-	}
+	o.WriteString(barLineTw(tw, "Disk used (total)", pctUsed, useColor))
+	o.WriteByte('\n')
 
 	if len(r.Disks) > 0 {
 		var rows [][]string
@@ -454,11 +457,7 @@ func RenderReportText(r *SystemReport, useColor bool) string {
 		o.WriteString(tableMultiHeaderTw(tw, "Per-volume breakdown", []string{"Mount", "Medium", "Size", "Used", "Free", "Used%"}, rows, useColor))
 		o.WriteString("\n")
 		for _, d := range r.Disks {
-			lbl := d.Mountpoint
-			if useColor {
-				lbl = utils.RGBText(120, 255, 180, d.Mountpoint)
-			}
-			o.WriteString(" " + lbl + "  " + rgbBarPct(d.UsedPct, barW, useColor) + "\n")
+			o.WriteString(barLineTw(tw, d.Mountpoint, d.UsedPct, useColor))
 		}
 		o.WriteString("\n")
 	}
