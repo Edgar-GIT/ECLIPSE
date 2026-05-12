@@ -2529,7 +2529,7 @@ func showOSINTOutputFromFile(reader *bufio.Reader, path string) {
 		case "q", "":
 			return
 		default:
-			// Ignore unknown commands and re-render current page.
+
 		}
 	}
 }
@@ -2596,7 +2596,6 @@ func extractActionableOutput(tool string, output []byte) []byte {
 		}
 		ll := strings.ToLower(l)
 
-		// Remove noisy progress/log lines.
 		if strings.Contains(ll, "checking") || strings.Contains(ll, "trying") || strings.Contains(ll, "scanning") {
 			continue
 		}
@@ -2609,7 +2608,7 @@ func extractActionableOutput(tool string, output []byte) []byte {
 
 		switch tool {
 		case "sherlock":
-			// Keep only discovered profiles/URLs.
+
 			if strings.Contains(l, "http://") || strings.Contains(l, "https://") || strings.Contains(ll, "[+]") {
 				keep = append(keep, l)
 			}
@@ -2806,7 +2805,7 @@ func removeHTMLNoiseBlocks(content string) string {
 
 func extractReadableTextFromHTML(content string) string {
 	plain := normalizeWhitespace(stripHTMLTags(content))
-	// Drop minified client-hydration payload artifacts common in modern JS frameworks.
+
 	noise := []string{"self.__next_f", "window.__", "__NEXT_DATA__", "@keyframes", "function(", "=>"}
 	for _, n := range noise {
 		if strings.Contains(strings.ToLower(plain), strings.ToLower(n)) {

@@ -33,7 +33,6 @@ func extractChromeKeyWindowsFromDisk(localStatePath string) ([]byte, error) {
 		return nil, err
 	}
 
-	// Remove DPAPI prefix if present
 	if bytes.HasPrefix(encryptedKey, []byte("DPAPI")) {
 		encryptedKey = encryptedKey[5:]
 	}
@@ -47,7 +46,6 @@ func extractChromeKeyLinux() ([]byte, error) {
 		return nil, err
 	}
 
-	// Try to find Local State file
 	possiblePaths := []string{
 		filepath.Join(home, ".config", "google-chrome", "Local State"),
 		filepath.Join(home, ".config", "google-chrome-stable", "Local State"),
@@ -83,29 +81,25 @@ func extractChromeKeyLinux() ([]byte, error) {
 		return nil, err
 	}
 
-	// Try to get key from secret-tool (GNOME Keyring)
 	if key := getKeyFromGnomeKeyring(); key != nil {
 		return key, nil
 	}
 
-	// Try environment variable
 	if envKey := os.Getenv("CHROME_ENCRYPTION_KEY"); envKey != "" {
 		return []byte(envKey), nil
 	}
 
-	// Return the encrypted key as-is for fallback handling
 	return encryptedKey, nil
 }
 
 func getKeyFromGnomeKeyring() []byte {
-	// Try secret-tool command
+
 	cmd := exec.Command("secret-tool", "lookup", "xdg:schema", "org.chromium.Secret")
 	output, err := cmd.Output()
 	if err == nil && len(output) > 0 {
 		return bytes.TrimSpace(output)
 	}
 
-	// Try dbus-send approach for kde-wallet
 	cmd = exec.Command("qdbus", "org.kde.kwalletd5", "/modules/kwalletd5", "networkWallet")
 	output, err = cmd.Output()
 	if err == nil && len(output) > 0 {
@@ -124,7 +118,7 @@ func extractCookiesWithKey(cookiesPath string, key []byte) ([]BrowserCookie, err
 
 	tempCookies := filepath.Join(tempDir, "Cookies")
 	if err := copyFile(cookiesPath, tempCookies); err != nil {
-		// If copy fails due to file being locked, try opening directly
+
 		return extractFromLockedDatabase(cookiesPath, key)
 	}
 
@@ -177,7 +171,7 @@ func extractFromDatabase(dbPath string, key []byte) ([]BrowserCookie, error) {
 }
 
 func extractFromLockedDatabase(dbPath string, key []byte) ([]BrowserCookie, error) {
-	// If database is locked by running browser, try to access it anyway
+
 	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro")
 	if err != nil {
 		return nil, err
@@ -223,12 +217,11 @@ func extractFromLockedDatabase(dbPath string, key []byte) ([]BrowserCookie, erro
 }
 
 func decryptChromeCookie(encrypted, key []byte) (string, error) {
-	// Handle v10/v11 encrypted cookies (AES-GCM)
+
 	if len(encrypted) >= 15 && (bytes.HasPrefix(encrypted, []byte("v10")) || bytes.HasPrefix(encrypted, []byte("v11"))) {
 		return decryptAESGCM(encrypted, key)
 	}
 
-	// Handle DPAPI encrypted cookies (Windows)
 	if len(encrypted) > 0 {
 		decrypted, err := decryptData(encrypted)
 		if err == nil && len(decrypted) > 0 {
@@ -240,7 +233,7 @@ func decryptChromeCookie(encrypted, key []byte) (string, error) {
 }
 
 func decryptAESGCM(encrypted, key []byte) (string, error) {
-	// v10/v11 format: [prefix(3 bytes)][nonce(12 bytes)][ciphertext+tag(rest)]
+
 	if len(encrypted) < 15 {
 		return "", fmt.Errorf("encrypted data too short")
 	}

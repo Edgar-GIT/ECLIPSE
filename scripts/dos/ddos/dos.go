@@ -194,7 +194,6 @@ func init() {
 	}
 }
 
-// normalizeDosTarget accepts a full URL or a bare host/IP (optional :port, IPv6 as ::1 or [::1]:8080).
 func normalizeDosTarget(raw string) string {
 	s := strings.TrimSpace(raw)
 	if s == "" {
@@ -210,7 +209,6 @@ func normalizeDosTarget(raw string) string {
 	return "http://" + s
 }
 
-// hostBypassesHTTPProxy is true for localhost and RFC1918/link-local hosts — HTTP proxies would connect to the proxy machine, not yours.
 func hostBypassesHTTPProxy(target string) bool {
 	u, err := url.Parse(target)
 	if err != nil || u.Hostname() == "" {
@@ -242,7 +240,6 @@ func configUsesHTTPFlood(method string) bool {
 	}
 }
 
-// warnIfHTTPTargetUnreachable does a single short GET — connection refused / timeout means no listener (not proxy-related).
 func warnIfHTTPTargetUnreachable(config AttackConfig) {
 	client := createHTTPClient(config)
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
@@ -589,7 +586,6 @@ func httpFloodOnce(config AttackConfig, client *http.Client, method string) {
 		return
 	}
 
-	// Any HTTP status means the server answered; 4xx/5xx used to be counted as "failed" and looked like a broken attack.
 	if resp.StatusCode >= 100 && resp.StatusCode < 600 {
 		atomic.AddUint64(&successfulHits, 1)
 	} else {
@@ -843,10 +839,6 @@ func monitorResources(monitor *ResourceMonitor) {
 		}
 
 		updateResourceMonitor(monitor)
-
-		if monitor.cpuPercent > MAX_CPU_PERCENT || monitor.memPercent > MAX_MEM_PERCENT {
-			// System overload, but continue
-		}
 	}
 }
 

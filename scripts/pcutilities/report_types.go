@@ -45,20 +45,20 @@ type SystemReport struct {
 	ProcCount  uint64
 	UserNames  string
 
-	CPUModel      string
-	CPUMhz        string
-	CPUPhysical   int
-	CPULogical    int
-	CPUUsagePct   float64
-	LoadAvg       string
+	CPUModel    string
+	CPUMhz      string
+	CPUPhysical int
+	CPULogical  int
+	CPUUsagePct float64
+	LoadAvg     string
 
-	RAMTotal     uint64
-	RAMUsed      uint64
-	RAMAvail     uint64
-	RAMUsedPct   float64
-	SwapTotal    uint64
-	SwapUsed     uint64
-	SwapUsedPct  float64
+	RAMTotal    uint64
+	RAMUsed     uint64
+	RAMAvail    uint64
+	RAMUsedPct  float64
+	SwapTotal   uint64
+	SwapUsed    uint64
+	SwapUsedPct float64
 
 	Disks          []DiskVol
 	DiskTotalBytes uint64
@@ -93,7 +93,6 @@ type SystemReport struct {
 	Goroutines int
 	ProcVis    int
 
-	// Extra hardware / connectivity (no Wi‑Fi PSK — never exported by design).
 	WiFiBSSIDCurrent string
 	WiFiSecurityNote string
 

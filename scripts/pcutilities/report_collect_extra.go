@@ -219,7 +219,6 @@ func collectHomeDiskUsage() (lines []string, largest string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 18*time.Second)
 	defer cancel()
-	// Summarize top-level dirs under $HOME (can be slow on huge trees).
 	cmd := exec.CommandContext(ctx, "sh", "-c",
 		fmt.Sprintf("du -xh --max-depth=1 %q 2>/dev/null | sort -hr | head -n 18", home))
 	b, err := cmd.Output()
@@ -233,7 +232,6 @@ func collectHomeDiskUsage() (lines []string, largest string) {
 		}
 	}
 	if len(lines) > 1 {
-		// First line is usually $HOME itself; second is often largest child.
 		for _, ln := range lines[1:] {
 			if strings.HasPrefix(ln, home+string(filepath.Separator)) || strings.Contains(ln, "\t") {
 				largest = ln

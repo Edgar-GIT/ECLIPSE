@@ -53,13 +53,21 @@ func lerp(a, b int, t float64) int {
 }
 
 func rgbBarPct(pct float64, width int, useColor bool) string {
-	if width < 12 {width = 12}
-	if pct < 0 {pct = 0}
-	if pct > 100{ pct = 100}
-	
+	if width < 12 {
+		width = 12
+	}
+	if pct < 0 {
+		pct = 0
+	}
+	if pct > 100 {
+		pct = 100
+	}
+
 	filled := int(pct / 100 * float64(width))
 
-	if pct > 0 && filled == 0 {filled = 1}
+	if pct > 0 && filled == 0 {
+		filled = 1
+	}
 
 	var b strings.Builder
 	for i := 0; i < width; i++ {

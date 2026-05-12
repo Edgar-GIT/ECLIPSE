@@ -1,6 +1,5 @@
 package pcutilities
 
-// CSS is a raw string (not fmt): use single % for valid CSS percentages.
 func htmlReportStyles() string {
 	return `<style>
 :root{

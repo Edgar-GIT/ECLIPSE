@@ -1,5 +1,4 @@
 //go:build !windows
-// +build !windows
 
 package cookies
 
@@ -7,7 +6,6 @@ import (
 	"fmt"
 )
 
-// Memory extraction stubs for non-Windows systems
 type ProcessMemoryExtractor struct{}
 
 func FindChromeProcess() (uint32, error) {
