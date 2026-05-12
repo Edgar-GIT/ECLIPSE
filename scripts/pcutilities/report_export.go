@@ -113,14 +113,16 @@ func buildHTMLReport(r *SystemReport) string {
 	chartsHTML := htmlChartsRow(r)
 	extrasHTML := htmlExtrasSections(r)
 
-	diskAggNote := ""
+	diskAggNoteText := "—"
 	if r.DiskTotalBytes > 0 {
 		pctFree := float64(r.DiskFreeBytes) * 100 / float64(r.DiskTotalBytes)
 		if math.Abs(100-pctUsed-pctFree) > 0.75 {
-			diskAggNote = fmt.Sprintf(`<p class="muted" style="margin-top:10px;font-size:.82rem;">Summed volumes: about %.1f%% used and %.1f%% free of summed capacity; totals can differ from 100%% when mount points overlap the same storage.</p>`,
+			diskAggNoteText = fmt.Sprintf(
+				"Summed volumes: about %.1f%% used and %.1f%% free of summed capacity; totals can differ from 100%% when mount points overlap the same storage.",
 				pctUsed, pctFree)
 		}
 	}
+	diskAggNoteEsc := html.EscapeString(diskAggNoteText)
 
 	inner := fmt.Sprintf(`
 <body>
@@ -134,50 +136,53 @@ func buildHTMLReport(r *SystemReport) string {
 
 %s
 
-<div class="grid">
+<div class="summary-grid">
 <section class="card card-a stack" style="--d:0.05s">
 <h2>Network</h2>
-<table>
+<table class="kv">
 <tr><th>Field</th><th>Value</th></tr>
-<tr><td>Local IPs</td><td>%s</td></tr>
-<tr><td>Public IP</td><td>%s</td></tr>
-<tr><td>Active</td><td>%s</td></tr>
-<tr><td>MAC (default iface)</td><td>%s</td></tr>
-<tr><td>Link speed (~1s sample)</td><td>↓ %.2f Mbps · ↑ %.2f Mbps</td></tr>
-<tr><td>Wi‑Fi BSSID (current)</td><td>%s</td></tr>
-<tr><td>Wi‑Fi passphrase</td><td>Never exported (security policy)</td></tr>
-<tr><td>Notes</td><td>%s</td></tr>
+<tr><td>Local IPs</td><td class="val">%s</td></tr>
+<tr><td>Public IP</td><td class="val">%s</td></tr>
+<tr><td>Active</td><td class="val">%s</td></tr>
+<tr><td>MAC (default iface)</td><td class="val">%s</td></tr>
+<tr><td>Link speed (~1s sample)</td><td class="val">↓ %.2f Mbps · ↑ %.2f Mbps</td></tr>
+<tr><td>Wi‑Fi BSSID (current)</td><td class="val">%s</td></tr>
+<tr><td>Wi‑Fi passphrase</td><td class="val">Never exported (security policy)</td></tr>
+<tr><td>Notes</td><td class="val">%s</td></tr>
 </table>
 </section>
 
 <section class="card card-b stack" style="--d:0.12s">
 <h2>CPU &amp; GPU</h2>
-<table>
+<table class="kv">
 <tr><th>Field</th><th>Value</th></tr>
-<tr><td>CPU</td><td>%s</td></tr>
-<tr><td>Usage</td><td><span class="pill">%.1f%%</span></td></tr>
-<tr><td>Cores</td><td>%d phys / %d logical</td></tr>
-<tr><td>GPU</td><td>%s</td></tr>
+<tr><td>CPU</td><td class="val">%s</td></tr>
+<tr><td>Usage</td><td class="val"><span class="pill">%.1f%%</span></td></tr>
+<tr><td>Cores</td><td class="val">%d phys / %d logical</td></tr>
+<tr><td>GPU</td><td class="val">%s</td></tr>
 </table>
 <div class="barwrap" title="CPU"><div class="barfill bar-cpu" style="width:%.3f%%"></div></div>
 </section>
 
 <section class="card card-c stack" style="--d:0.19s">
 <h2>Memory</h2>
-<table>
+<table class="kv">
 <tr><th>Field</th><th>Value</th></tr>
-<tr><td>RAM</td><td>%s used of %s <span class="pill">%.1f%%</span></td></tr>
-<tr><td>Swap</td><td>%s / %s</td></tr>
+<tr><td>RAM</td><td class="val">%s used of %s <span class="pill">%.1f%%</span></td></tr>
+<tr><td>Swap</td><td class="val">%s / %s</td></tr>
 </table>
 <div class="barwrap"><div class="barfill bar-ram" style="width:%.3f%%"></div></div>
 </section>
 
 <section class="card card-d stack" style="--d:0.26s">
 <h2>Storage total</h2>
-<p class="big">%s <span class="muted">used of</span> %s</p>
-<p class="pct-label"><strong>%.1f%%</strong> used</p>
+<table class="kv">
+<tr><th>Field</th><th>Value</th></tr>
+<tr><td>Used / total</td><td class="val">%s <span class="muted">used of</span> %s</td></tr>
+<tr><td>Used %</td><td class="val"><span class="pill">%.1f%%</span></td></tr>
+<tr><td>Aggregate note</td><td class="val note-cell">%s</td></tr>
+</table>
 <div class="barwrap bar-fat"><div class="barfill bar-disk" style="width:%.3f%%"></div></div>
-%s
 </section>
 </div>
 
@@ -234,7 +239,7 @@ func buildHTMLReport(r *SystemReport) string {
 		formatBytes(r.DiskTotalBytes),
 		pctUsed,
 		pctUsed,
-		diskAggNote,
+		diskAggNoteEsc,
 		ifaceRows,
 		wifiRows,
 		disksHTML.String(),
