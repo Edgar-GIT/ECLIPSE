@@ -2823,6 +2823,11 @@ func resolveFileExecutablePath(p string) (string, error) {
 	if info.IsDir() {
 		return "", errors.New("is directory")
 	}
+	if runtime.GOOS != "windows" && info.Mode().IsRegular() {
+		if info.Mode().Perm()&0111 == 0 {
+			return "", errors.New("not executable")
+		}
+	}
 	return filepath.Clean(p), nil
 }
 
