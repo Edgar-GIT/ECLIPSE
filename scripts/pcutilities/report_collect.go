@@ -195,7 +195,7 @@ func CollectSystemReport() (*SystemReport, error) {
 		}
 	}
 
-	if io, err := psnet.IOCounters(true); err == nil {
+	if io, err := psnet.IOCounters(false); err == nil {
 		sort.Slice(io, func(i, j int) bool { return io[i].Name < io[j].Name })
 		for _, c := range io {
 			if strings.HasPrefix(c.Name, "lo") || c.Name == "Loopback Pseudo-Interface 1" {
@@ -598,26 +598,26 @@ func fetchPublicIP() (string, string) {
 	return "", lastErr
 }
 
-func pickIOCounters(list []psnet.IOCounterStat, name string) (psnet.IOCounterStat, bool) {
+func pickIOCounters(list []psnet.IOCountersStat, name string) (psnet.IOCountersStat, bool) {
 	for _, c := range list {
 		if c.Name == name {
 			return c, true
 		}
 	}
-	return psnet.IOCounterStat{}, false
+	return psnet.IOCountersStat{}, false
 }
 
 func collectNetMbps(defaultIface string) (down float64, up float64) {
-	c1, err := psnet.IOCounters(true)
+	c1, err := psnet.IOCounters(false)
 	if err != nil || len(c1) == 0 {
 		return 0, 0
 	}
 	time.Sleep(time.Second)
-	c2, err2 := psnet.IOCounters(true)
+	c2, err2 := psnet.IOCounters(false)
 	if err2 != nil {
 		return 0, 0
 	}
-	m1 := map[string]psnet.IOCounterStat{}
+	m1 := map[string]psnet.IOCountersStat{}
 	for _, c := range c1 {
 		m1[c.Name] = c
 	}
