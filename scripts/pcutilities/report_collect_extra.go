@@ -384,6 +384,7 @@ func fillReportExtras(r *SystemReport) {
 	home := strings.TrimSpace(r.HomeDirForReport)
 	if home != "" && runtime.GOOS != "windows" {
 		r.HomeTopDirs, r.HomeLargestLine = collectHomeDiskUsage(home)
+		r.HomeLargestLine = strings.Join(strings.Fields(strings.TrimSpace(r.HomeLargestLine)), " ")
 		r.HomeListing = collectHomeListing(home)
 	}
 }

@@ -109,6 +109,17 @@ func buildHTMLReport(r *SystemReport) string {
 	if r.PublicIP == "" {
 		pub = "— (" + html.EscapeString(r.PublicIPErr) + ")"
 	}
+	localIPs := dedupeKeepOrder(r.LocalIPs)
+	var localIPsHTML strings.Builder
+	for i, ip := range localIPs {
+		if i > 0 {
+			localIPsHTML.WriteString("<br/>")
+		}
+		localIPsHTML.WriteString(html.EscapeString(ip))
+	}
+	if localIPsHTML.Len() == 0 {
+		localIPsHTML.WriteString("—")
+	}
 
 	chartsHTML := htmlChartsRow(r)
 	extrasHTML := htmlExtrasSections(r)
@@ -215,7 +226,7 @@ func buildHTMLReport(r *SystemReport) string {
 		html.EscapeString(r.CollectedAt.Format(time.RFC3339)),
 		html.EscapeString(r.Hostname),
 		chartsHTML,
-		html.EscapeString(strings.Join(dedupeKeepOrder(r.LocalIPs), ", ")),
+		localIPsHTML.String(),
 		pub,
 		html.EscapeString(nz(r.ActiveConn)),
 		html.EscapeString(defMAC),
@@ -238,8 +249,8 @@ func buildHTMLReport(r *SystemReport) string {
 		formatBytes(r.DiskUsedBytes),
 		formatBytes(r.DiskTotalBytes),
 		pctUsed,
-		pctUsed,
 		diskAggNoteEsc,
+		pctUsed,
 		ifaceRows,
 		wifiRows,
 		disksHTML.String(),
