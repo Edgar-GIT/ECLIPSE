@@ -14,13 +14,15 @@ type DiskVol struct {
 }
 
 type NetIface struct {
-	Name   string
-	Addrs  []string
-	IsWifi bool
+	Name     string
+	Hardware string
+	Addrs    []string
+	IsWifi   bool
 }
 
 type WiFiNet struct {
 	SSID     string
+	BSSID    string
 	Signal   string
 	Security string
 	Active   bool
@@ -90,4 +92,17 @@ type SystemReport struct {
 	GoVersion  string
 	Goroutines int
 	ProcVis    int
+
+	// Extra hardware / connectivity (no Wi‑Fi PSK — never exported by design).
+	WiFiBSSIDCurrent string
+	WiFiSecurityNote string
+
+	BluetoothDevices []string
+	AudioDevices     []string
+	Monitors         []string
+	LoadedModules    []string
+	ListenPorts      []string
+	DBLikeProcesses  []string
+	HomeTopDirs      []string
+	HomeLargestLine  string
 }

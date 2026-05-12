@@ -2,6 +2,7 @@ package pcutilities
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -103,6 +104,9 @@ func barLineTw(tw int, label string, pct float64, useColor bool) string {
 	label = strings.TrimSpace(label)
 	if label == "" {
 		label = "Usage"
+	}
+	if len([]rune(label)) > 34 {
+		label = truncateRunes(label, 34)
 	}
 	prefix := " " + label + " "
 	barW := tw - len([]rune(prefix)) - 10
@@ -299,7 +303,13 @@ func truncateRunes(s string, max int) string {
 }
 
 func RenderReportText(r *SystemReport, useColor bool) string {
-	tw := effectiveTermWidth()
+	return RenderReportTextWidth(r, useColor, 0)
+}
+
+func RenderReportTextWidth(r *SystemReport, useColor bool, tw int) string {
+	if tw <= 0 {
+		tw = effectiveTermWidth()
+	}
 	var o strings.Builder
 	ts := r.CollectedAt.Format("2006-01-02 15:04:05")
 	head := fmt.Sprintf("ECLIPSE · System report · %s", ts)
@@ -351,6 +361,12 @@ func RenderReportText(r *SystemReport, useColor bool) string {
 	}
 	netRows = append(netRows, [2]string{"Default / routed iface", nz(r.DefaultIface)})
 	netRows = append(netRows, [2]string{"Active connection", nz(r.ActiveConn)})
+	if r.WiFiBSSIDCurrent != "" {
+		netRows = append(netRows, [2]string{"Wi‑Fi BSSID (current)", r.WiFiBSSIDCurrent})
+	}
+	if r.WiFiSecurityNote != "" {
+		netRows = append(netRows, [2]string{"Wi‑Fi secrets policy", r.WiFiSecurityNote})
+	}
 	o.WriteString(tableKeyValueTw(tw, "Network summary", netRows, useColor))
 	o.WriteString("\n")
 
@@ -361,9 +377,9 @@ func RenderReportText(r *SystemReport, useColor bool) string {
 			if iface.IsWifi {
 				typ = "Wi‑Fi"
 			}
-			rows = append(rows, []string{iface.Name, typ, strings.Join(iface.Addrs, ", ")})
+			rows = append(rows, []string{iface.Name, typ, nz(iface.Hardware), strings.Join(iface.Addrs, ", ")})
 		}
-		o.WriteString(tableMultiHeaderTw(tw, "Interfaces", []string{"Name", "Type", "Addresses"}, rows, useColor))
+		o.WriteString(tableMultiHeaderTw(tw, "Interfaces", []string{"Name", "Type", "MAC", "Addresses"}, rows, useColor))
 		o.WriteString("\n")
 	}
 
@@ -374,9 +390,9 @@ func RenderReportText(r *SystemReport, useColor bool) string {
 			if w.Active {
 				act = "yes"
 			}
-			rows = append(rows, []string{w.SSID, w.Signal, w.Security, act})
+			rows = append(rows, []string{w.SSID, nz(w.BSSID), w.Signal, w.Security, act})
 		}
-		o.WriteString(tableMultiHeaderTw(tw, "Wi‑Fi networks (scan)", []string{"SSID", "Signal", "Security", "Active"}, rows, useColor))
+		o.WriteString(tableMultiHeaderTw(tw, "Wi‑Fi networks (scan)", []string{"SSID", "BSSID", "Signal", "Security", "Active"}, rows, useColor))
 		o.WriteString("\n")
 	}
 
@@ -472,6 +488,69 @@ func RenderReportText(r *SystemReport, useColor bool) string {
 		}
 		o.WriteString(tableMultiHeaderTw(tw, "Network I/O (since boot)", []string{"Iface", "RX", "TX", "Packets rx/tx"}, rows, useColor))
 		o.WriteString("\n")
+	}
+
+	if len(r.ListenPorts) > 0 {
+		var rows [][]string
+		for _, ln := range r.ListenPorts {
+			rows = append(rows, []string{ln})
+		}
+		o.WriteString(tableMultiHeaderTw(tw, "Listening sockets (sample)", []string{"Entry"}, rows, useColor))
+		o.WriteString("\n")
+	}
+
+	if len(r.DBLikeProcesses) > 0 {
+		var rows [][]string
+		for _, ln := range r.DBLikeProcesses {
+			rows = append(rows, []string{ln})
+		}
+		o.WriteString(tableMultiHeaderTw(tw, "Database-like processes (sample)", []string{"PID · name · cmdline"}, rows, useColor))
+		o.WriteString("\n")
+	}
+
+	if len(r.BluetoothDevices) > 0 {
+		var rows [][]string
+		for _, ln := range r.BluetoothDevices {
+			rows = append(rows, []string{ln})
+		}
+		o.WriteString(tableMultiHeaderTw(tw, "Bluetooth devices", []string{"Address · name"}, rows, useColor))
+		o.WriteString("\n")
+	}
+
+	if len(r.AudioDevices) > 0 {
+		var rows [][]string
+		for _, ln := range r.AudioDevices {
+			rows = append(rows, []string{ln})
+		}
+		o.WriteString(tableMultiHeaderTw(tw, "Audio devices / sinks", []string{"Entry"}, rows, useColor))
+		o.WriteString("\n")
+	}
+
+	if len(r.Monitors) > 0 {
+		var rows [][]string
+		for _, ln := range r.Monitors {
+			rows = append(rows, []string{ln})
+		}
+		o.WriteString(tableMultiHeaderTw(tw, "Displays (xrandr)", []string{"Line"}, rows, useColor))
+		o.WriteString("\n")
+	}
+
+	if len(r.LoadedModules) > 0 {
+		o.WriteString(tableKeyValueTw(tw, "Kernel modules (sample)", [][2]string{{"Loaded (first N)", strings.Join(r.LoadedModules, ", ")}}, useColor))
+		o.WriteString("\n")
+	}
+
+	if len(r.HomeTopDirs) > 0 {
+		var rows [][]string
+		for _, ln := range r.HomeTopDirs {
+			rows = append(rows, []string{ln})
+		}
+		o.WriteString(tableMultiHeaderTw(tw, fmt.Sprintf("Home disk usage (top-level, %s)", os.Getenv("HOME")), []string{"du line"}, rows, useColor))
+		o.WriteString("\n")
+		if r.HomeLargestLine != "" {
+			o.WriteString(tableKeyValueTw(tw, "Home — largest entry (from du)", [][2]string{{"Line", r.HomeLargestLine}}, useColor))
+			o.WriteString("\n")
+		}
 	}
 
 	var runRows [][2]string

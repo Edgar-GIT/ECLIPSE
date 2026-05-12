@@ -38,7 +38,7 @@ func ExportReportFiles(r *SystemReport) (txtPath, htmlPath string, err error) {
 	txtPath = filepath.Join(dir, base+".txt")
 	htmlPath = filepath.Join(dir, base+".html")
 
-	plain := RenderReportText(r, false)
+	plain := RenderReportTextWidth(r, false, effectiveTermWidth())
 	if err := os.WriteFile(txtPath, []byte(plain), 0644); err != nil {
 		return "", "", err
 	}

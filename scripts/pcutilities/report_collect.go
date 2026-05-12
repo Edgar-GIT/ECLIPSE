@@ -2,6 +2,7 @@ package pcutilities
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"net/http"
@@ -173,7 +174,12 @@ func CollectSystemReport() (*SystemReport, error) {
 			if runtime.GOOS == "windows" && strings.Contains(strings.ToLower(iface.Name), "wi-fi") {
 				wifi = true
 			}
-			r.InterfaceRows = append(r.InterfaceRows, NetIface{Name: iface.Name, Addrs: addrs, IsWifi: wifi})
+			r.InterfaceRows = append(r.InterfaceRows, NetIface{
+				Name:     iface.Name,
+				Hardware: strings.TrimSpace(strings.ToUpper(iface.HardwareAddr)),
+				Addrs:    addrs,
+				IsWifi:   wifi,
+			})
 			for _, a := range addrs {
 				ip := strings.Split(a, "/")[0]
 				if strings.HasPrefix(ip, "127.") || strings.EqualFold(ip, "::1") {
@@ -212,6 +218,8 @@ func CollectSystemReport() (*SystemReport, error) {
 	r.WiFiNetworks = collectWiFiList()
 	markActiveWiFi(&r.WiFiNetworks, r.ActiveConn)
 	r.PublicIP, r.PublicIPErr = fetchPublicIP()
+
+	fillReportExtras(r)
 
 	return r, nil
 }
@@ -410,40 +418,79 @@ func collectWiFiList() []WiFiNet {
 	var out []WiFiNet
 	switch runtime.GOOS {
 	case "linux":
-		cmd := exec.Command("nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY,ACTIVE", "dev", "wifi", "list", "--rescan", "no")
-		b, err := cmd.Output()
-		if err != nil {
-			cmd2 := exec.Command("nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY,ACTIVE", "dev", "wifi")
-			b, err = cmd2.Output()
+		tryTab := func() ([]byte, error) {
+			return exec.Command("nmcli", "--separator", "\t", "-f", "SSID,SIGNAL,SECURITY,ACTIVE,BSSID", "dev", "wifi", "list", "--rescan", "no").Output()
 		}
+		b, err := tryTab()
 		if err != nil {
-			return out
+			b, err = exec.Command("nmcli", "--separator", "\t", "-f", "SSID,SIGNAL,SECURITY,ACTIVE,BSSID", "dev", "wifi").Output()
 		}
-		seen := map[string]struct{}{}
-		for _, line := range strings.Split(string(b), "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
+		if err == nil && len(b) > 0 && bytes.Contains(b, []byte("\t")) {
+			best := map[string]WiFiNet{}
+			for _, line := range strings.Split(string(b), "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" {
+					continue
+				}
+				parts := strings.Split(line, "\t")
+				for len(parts) < 5 {
+					parts = append(parts, "")
+				}
+				ssid, sig, sec, act, bssid := parts[0], parts[1], parts[2], parts[3], parts[4]
+				if ssid == "" || ssid == "--" {
+					continue
+				}
+				cand := WiFiNet{
+					SSID:     ssid,
+					BSSID:    strings.TrimSpace(bssid),
+					Signal:   strings.TrimSpace(sig) + "%",
+					Security: strings.TrimSpace(sec),
+					Active:   strings.EqualFold(strings.TrimSpace(act), "yes"),
+				}
+				prev, ok := best[ssid]
+				if !ok || wifiSignalStrength(cand.Signal) > wifiSignalStrength(prev.Signal) {
+					best[ssid] = cand
+				}
 			}
-			parts := strings.Split(line, ":")
-			for len(parts) < 4 {
-				parts = append(parts, "")
+			for _, w := range best {
+				out = append(out, w)
 			}
-			ssid, sig, sec, act := parts[0], parts[1], parts[2], parts[3]
-			if ssid == "" || ssid == "--" {
-				continue
+		} else {
+			cmd := exec.Command("nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY,ACTIVE", "dev", "wifi", "list", "--rescan", "no")
+			b2, err2 := cmd.Output()
+			if err2 != nil {
+				cmd2 := exec.Command("nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY,ACTIVE", "dev", "wifi")
+				b2, err2 = cmd2.Output()
 			}
-			key := ssid + "|" + sig
-			if _, ok := seen[key]; ok {
-				continue
+			if err2 != nil {
+				return out
 			}
-			seen[key] = struct{}{}
-			out = append(out, WiFiNet{
-				SSID:     ssid,
-				Signal:   sig + "%",
-				Security: sec,
-				Active:   strings.EqualFold(act, "yes"),
-			})
+			seen := map[string]struct{}{}
+			for _, line := range strings.Split(string(b2), "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" {
+					continue
+				}
+				parts := strings.Split(line, ":")
+				for len(parts) < 4 {
+					parts = append(parts, "")
+				}
+				ssid, sig, sec, act := parts[0], parts[1], parts[2], parts[3]
+				if ssid == "" || ssid == "--" {
+					continue
+				}
+				key := ssid + "|" + sig
+				if _, ok := seen[key]; ok {
+					continue
+				}
+				seen[key] = struct{}{}
+				out = append(out, WiFiNet{
+					SSID:     ssid,
+					Signal:   sig + "%",
+					Security: sec,
+					Active:   strings.EqualFold(act, "yes"),
+				})
+			}
 		}
 	case "windows":
 		b, err := exec.Command("netsh", "wlan", "show", "networks", "mode=Bssid").Output()
@@ -482,6 +529,12 @@ func collectWiFiList() []WiFiNet {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].SSID < out[j].SSID })
 	return out
+}
+
+func wifiSignalStrength(sig string) int {
+	sig = strings.TrimSpace(strings.TrimSuffix(sig, "%"))
+	n, _ := strconv.Atoi(sig)
+	return n
 }
 
 func markActiveWiFi(nets *[]WiFiNet, activeSummary string) {
