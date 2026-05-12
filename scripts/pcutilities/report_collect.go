@@ -68,6 +68,7 @@ func CollectSystemReport() (*SystemReport, error) {
 	}
 
 	if temps, err := host.SensorsTemperatures(); err == nil {
+		counts := map[string]int{}
 		for _, t := range temps {
 			if t.Temperature == 0 {
 				continue
@@ -75,6 +76,10 @@ func CollectSystemReport() (*SystemReport, error) {
 			label := strings.TrimSpace(t.SensorKey)
 			if label == "" {
 				label = t.String()
+			}
+			counts[label]++
+			if c := counts[label]; c > 1 {
+				label = fmt.Sprintf("%s · %d", label, c)
 			}
 			r.Thermal = append(r.Thermal, struct {
 				Label string
@@ -218,7 +223,8 @@ func CollectSystemReport() (*SystemReport, error) {
 	r.WiFiNetworks = collectWiFiList()
 	markActiveWiFi(&r.WiFiNetworks, r.ActiveConn)
 	r.PublicIP, r.PublicIPErr = fetchPublicIP()
-
+	r.HomeDirForReport = reportHomeDir()
+	r.NetDownMbps, r.NetUpMbps = collectNetMbps(r.DefaultIface)
 	fillReportExtras(r)
 
 	return r, nil
@@ -590,4 +596,61 @@ func fetchPublicIP() (string, string) {
 		lastErr = "unavailable"
 	}
 	return "", lastErr
+}
+
+func pickIOCounters(list []psnet.IOCounterStat, name string) (psnet.IOCounterStat, bool) {
+	for _, c := range list {
+		if c.Name == name {
+			return c, true
+		}
+	}
+	return psnet.IOCounterStat{}, false
+}
+
+func collectNetMbps(defaultIface string) (down float64, up float64) {
+	c1, err := psnet.IOCounters(true)
+	if err != nil || len(c1) == 0 {
+		return 0, 0
+	}
+	time.Sleep(time.Second)
+	c2, err2 := psnet.IOCounters(true)
+	if err2 != nil {
+		return 0, 0
+	}
+	m1 := map[string]psnet.IOCounterStat{}
+	for _, c := range c1 {
+		m1[c.Name] = c
+	}
+	const sec = 1.0
+	var drx, dtx uint64
+	iface := strings.TrimSpace(defaultIface)
+	if iface != "" {
+		a, ok1 := m1[iface]
+		b, ok2 := pickIOCounters(c2, iface)
+		if ok1 && ok2 {
+			if b.BytesRecv >= a.BytesRecv {
+				drx = b.BytesRecv - a.BytesRecv
+			}
+			if b.BytesSent >= a.BytesSent {
+				dtx = b.BytesSent - a.BytesSent
+			}
+		}
+	} else {
+		for _, b := range c2 {
+			if strings.HasPrefix(b.Name, "lo") || b.Name == "Loopback Pseudo-Interface 1" {
+				continue
+			}
+			a, ok := m1[b.Name]
+			if !ok {
+				continue
+			}
+			if b.BytesRecv >= a.BytesRecv {
+				drx += b.BytesRecv - a.BytesRecv
+			}
+			if b.BytesSent >= a.BytesSent {
+				dtx += b.BytesSent - a.BytesSent
+			}
+		}
+	}
+	return float64(drx) * 8 / 1e6 / sec, float64(dtx) * 8 / 1e6 / sec
 }

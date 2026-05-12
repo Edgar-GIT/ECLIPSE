@@ -45,7 +45,7 @@ func htmlHBar(title string, pct float64, cls string) string {
 		pct = 100
 	}
 	return fmt.Sprintf(
-		`<div class="hbar-block"><div class="hbar-label">%s</div><div class="hbar-track"><div class="hbar-fill %s" style="--w:%.3f%%"></div></div></div>`,
+		`<div class="hbar-block"><div class="hbar-label">%s</div><div class="hbar-track"><div class="hbar-fill %s" style="width:%.3f%%"></div></div></div>`,
 		html.EscapeString(title), cls, pct,
 	)
 }
@@ -87,8 +87,17 @@ func htmlExtrasSections(r *SystemReport) string {
 		b.WriteString(fmt.Sprintf(`<section class="card wide stack"><h2>Kernel modules (sample)</h2><p class="muted">%s</p></section>`,
 			html.EscapeString(mod)))
 	}
-	if s := htmlMonoBlock("Home usage (du, top-level)", r.HomeTopDirs, 22); s != "" {
+	homeLbl := strings.TrimSpace(r.HomeDirForReport)
+	if homeLbl == "" {
+		homeLbl = "home"
+	}
+	if s := htmlMonoBlock("Home usage (du, top-level, "+homeLbl+")", r.HomeTopDirs, 22); s != "" {
 		b.WriteString(s)
+	}
+	if len(r.HomeListing) > 0 {
+		if s := htmlMonoBlock("Home listing (ls-style, "+homeLbl+")", r.HomeListing, 90); s != "" {
+			b.WriteString(s)
+		}
 	}
 	if strings.TrimSpace(r.HomeLargestLine) != "" {
 		b.WriteString(fmt.Sprintf(`<section class="card wide stack"><h2>Home — largest du line</h2><pre class="mono-list">%s</pre></section>`,

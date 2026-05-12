@@ -26,7 +26,6 @@ body{
 }
 @media (prefers-reduced-motion:reduce){
   .bg-aurora,.card,.barfill,.glitch::after,.pie,.hbar-fill{animation:none!important}
-  .barfill,.hbar-fill{width:var(--w)!important}
   .pie{transform:none!important;opacity:1!important}
   .card{opacity:1;transform:none}
 }
@@ -52,10 +51,10 @@ body{
 }
 .tag{margin:6px 0 0;font-size:.78rem;text-transform:uppercase;letter-spacing:.28em;color:#7a8ab8}
 .meta{margin:10px 0 0;font-size:.88rem;color:#9aaee5}
-.grid{display:grid;gap:22px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));margin-bottom:28px}
+.grid{display:grid;gap:32px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));margin-bottom:36px}
 .card{
   background:var(--glass);border:1px solid rgba(155,93,229,.35);border-radius:18px;
-  padding:20px 22px 22px;backdrop-filter:blur(12px);margin-bottom:26px;
+  padding:22px 24px 24px;backdrop-filter:blur(12px);margin-bottom:0;
   box-shadow:0 12px 40px rgba(0,0,0,.42),0 0 0 1px rgba(0,245,212,.08) inset;
   animation:rise .75s cubic-bezier(.22,1,.36,1) backwards;
   animation-delay:var(--d,.1s);
@@ -94,17 +93,15 @@ tr:hover td{background:rgba(0,245,212,.06)}
 }
 .bar-fat{height:20px}
 .barfill{
-  height:100%;width:0;border-radius:999px;
+  height:100%;min-width:0;border-radius:999px;
   background:linear-gradient(90deg,var(--neon2),var(--neon3),var(--neon1));
   background-size:200% 100%;
   box-shadow:0 0 20px rgba(0,245,212,.45);
-  animation:fillw 1.35s cubic-bezier(.22,1,.36,1) forwards,shimmer 2.8s linear infinite,glowpulse 2.2s ease-in-out infinite;
-  animation-delay:.12s,.18s,0s;
+  animation:shimmer 2.8s linear infinite,glowpulse 2.2s ease-in-out infinite;
 }
 .bar-cpu{background:linear-gradient(90deg,#00f5d4,#9b5de5,#ff006e);background-size:200% 100%}
 .bar-ram{background:linear-gradient(90deg,#fee440,#00bbf9,#9b5de5);background-size:200% 100%}
 .bar-disk{background:linear-gradient(90deg,#ff006e,#fee440,#00f5d4);background-size:200% 100%}
-@keyframes fillw{to{width:var(--w)}}
 @keyframes shimmer{
   0%{background-position:0% 50%}
   100%{background-position:200% 50%}
@@ -139,10 +136,10 @@ tr:hover td{background:rgba(0,245,212,.06)}
 .hbar-block{flex:1;min-width:180px;max-width:320px;margin-bottom:8px}
 .hbar-label{font-size:.72rem;color:#8ebfff;margin-bottom:6px;text-transform:uppercase;letter-spacing:.1em}
 .hbar-track{height:12px;border-radius:999px;background:rgba(0,0,0,.45);border:1px solid rgba(0,245,212,.2);overflow:hidden}
-.hbar-fill.bar-cpu{background:linear-gradient(90deg,#00f5d4,#9b5de5,#ff006e);background-size:200% 100%;animation:hfill 1.2s cubic-bezier(.22,1,.36,1) forwards,shimmer 2.8s linear infinite}
-.hbar-fill.bar-ram{background:linear-gradient(90deg,#fee440,#00bbf9,#9b5de5);background-size:200% 100%;animation:hfill 1.2s cubic-bezier(.22,1,.36,1) forwards,shimmer 2.8s linear infinite}
-.hbar-fill.bar-disk{background:linear-gradient(90deg,#ff006e,#fee440,#00f5d4);background-size:200% 100%;animation:hfill 1.2s cubic-bezier(.22,1,.36,1) forwards,shimmer 2.8s linear infinite}
-@keyframes hfill{to{width:var(--w)}}
+.hbar-fill{height:100%;min-width:0;border-radius:999px}
+.hbar-fill.bar-cpu{background:linear-gradient(90deg,#00f5d4,#9b5de5,#ff006e);background-size:200% 100%;animation:shimmer 2.8s linear infinite}
+.hbar-fill.bar-ram{background:linear-gradient(90deg,#fee440,#00bbf9,#9b5de5);background-size:200% 100%;animation:shimmer 2.8s linear infinite}
+.hbar-fill.bar-disk{background:linear-gradient(90deg,#ff006e,#fee440,#00f5d4);background-size:200% 100%;animation:shimmer 2.8s linear infinite}
 .diskgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:20px;margin-top:8px}
 .diskcard{
   background:rgba(12,16,36,.78);border-radius:16px;padding:18px;margin-bottom:4px;
@@ -156,6 +153,6 @@ tr:hover td{background:rgba(0,245,212,.06)}
 .diskcard .meta2{font-size:.8rem;color:#7a87b0;margin:0 0 10px}
 .diskcard .barwrap{margin-top:8px}
 .mono-list{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.78rem;color:#c9d6ff;white-space:pre-wrap;background:rgba(0,0,0,.35);padding:12px 14px;border-radius:12px;border:1px solid rgba(155,93,229,.25);max-height:320px;overflow:auto}
-.stack{margin-bottom:32px}
+.stack{margin-bottom:40px}
 </style>`
 }

@@ -104,4 +104,9 @@ type SystemReport struct {
 	DBLikeProcesses  []string
 	HomeTopDirs      []string
 	HomeLargestLine  string
+	HomeDirForReport string
+	HomeListing      []string
+
+	NetDownMbps float64
+	NetUpMbps   float64
 }

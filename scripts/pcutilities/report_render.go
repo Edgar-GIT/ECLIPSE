@@ -2,6 +2,7 @@ package pcutilities
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"strings"
 	"time"
@@ -241,7 +242,15 @@ func tableMultiHeaderTw(tw int, title string, headers []string, rows [][]string,
 	if avail < n {
 		avail = n
 	}
-	colW := avail / n
+	base := avail / n
+	rem := avail % n
+	colW := make([]int, n)
+	for i := 0; i < n; i++ {
+		colW[i] = base
+	}
+	if rem > 0 {
+		colW[n-1] += rem
+	}
 
 	var b strings.Builder
 	b.WriteString(boxTopTw(tw, title, useColor))
@@ -249,8 +258,9 @@ func tableMultiHeaderTw(tw int, title string, headers []string, rows [][]string,
 
 	headParts := make([]string, n)
 	for i, h := range headers {
-		hs := truncateRunes(h, colW)
-		pad := colW - len([]rune(hs))
+		w := colW[i]
+		hs := truncateRunes(h, w)
+		pad := w - len([]rune(hs))
 		if pad < 0 {
 			pad = 0
 		}
@@ -276,8 +286,9 @@ func tableMultiHeaderTw(tw int, title string, headers []string, rows [][]string,
 			if i < len(row) {
 				cell = strings.TrimSpace(row[i])
 			}
-			cs := truncateRunes(cell, colW)
-			pad := colW - len([]rune(cs))
+			w := colW[i]
+			cs := truncateRunes(cell, w)
+			pad := w - len([]rune(cs))
 			if pad < 0 {
 				pad = 0
 			}
@@ -369,6 +380,13 @@ func RenderReportTextWidth(r *SystemReport, useColor bool, tw int) string {
 	}
 	netRows = append(netRows, [2]string{"Default / routed iface", nz(r.DefaultIface)})
 	netRows = append(netRows, [2]string{"Active connection", nz(r.ActiveConn)})
+	netRows = append(netRows, [2]string{"Link speed (sample ~1s)", fmt.Sprintf("↓ %.2f Mbps · ↑ %.2f Mbps", r.NetDownMbps, r.NetUpMbps)})
+	for _, iface := range r.InterfaceRows {
+		if iface.Name == r.DefaultIface && strings.TrimSpace(iface.Hardware) != "" {
+			netRows = append(netRows, [2]string{"MAC (" + iface.Name + ")", iface.Hardware})
+			break
+		}
+	}
 	if r.WiFiBSSIDCurrent != "" {
 		netRows = append(netRows, [2]string{"Wi‑Fi BSSID (current)", r.WiFiBSSIDCurrent})
 	}
@@ -454,7 +472,12 @@ func RenderReportTextWidth(r *SystemReport, useColor bool, tw int) string {
 		pctUsed = float64(r.DiskUsedBytes) * 100 / float64(r.DiskTotalBytes)
 		pctFree = float64(r.DiskFreeBytes) * 100 / float64(r.DiskTotalBytes)
 	}
-	storRows = append(storRows, [2]string{"Volume used %", fmt.Sprintf("%.1f%% (free %.1f%%)", pctUsed, pctFree)})
+	sumPct := pctUsed + pctFree
+	gap := math.Abs(100 - sumPct)
+	storRows = append(storRows, [2]string{"Aggregate used / free %", fmt.Sprintf("%.1f%% used · %.1f%% free (of summed volume capacity)", pctUsed, pctFree)})
+	if gap > 0.75 {
+		storRows = append(storRows, [2]string{"Note", fmt.Sprintf("Used%%+free%% ≈ %.1f%% (≠100%% when mounts overlap the same storage or totals differ).", sumPct)})
+	}
 	o.WriteString(tableKeyValueTw(tw, "Storage (all mounted volumes)", storRows, useColor))
 	o.WriteString("\n")
 	o.WriteString(barLineTw(tw, "Disk used (total)", pctUsed, useColor))
@@ -548,17 +571,29 @@ func RenderReportTextWidth(r *SystemReport, useColor bool, tw int) string {
 		o.WriteString("\n")
 	}
 
+	homePath := strings.TrimSpace(r.HomeDirForReport)
+	if homePath == "" {
+		homePath = os.Getenv("HOME")
+	}
 	if len(r.HomeTopDirs) > 0 {
 		var rows [][]string
 		for _, ln := range r.HomeTopDirs {
 			rows = append(rows, []string{ln})
 		}
-		o.WriteString(tableMultiHeaderTw(tw, fmt.Sprintf("Home disk usage (top-level, %s)", os.Getenv("HOME")), []string{"du line"}, rows, useColor))
+		o.WriteString(tableMultiHeaderTw(tw, fmt.Sprintf("Home disk usage (top-level, %s)", homePath), []string{"du line"}, rows, useColor))
 		o.WriteString("\n")
 		if r.HomeLargestLine != "" {
 			o.WriteString(tableKeyValueTw(tw, "Home — largest entry (from du)", [][2]string{{"Line", r.HomeLargestLine}}, useColor))
 			o.WriteString("\n")
 		}
+	}
+	if len(r.HomeListing) > 0 {
+		var rows [][]string
+		for _, ln := range r.HomeListing {
+			rows = append(rows, []string{ln})
+		}
+		o.WriteString(tableMultiHeaderTw(tw, fmt.Sprintf("Home listing (%s)", homePath), []string{"ls-style"}, rows, useColor))
+		o.WriteString("\n")
 	}
 
 	var runRows [][2]string

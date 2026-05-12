@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -13,6 +14,159 @@ import (
 
 	"github.com/shirou/gopsutil/process"
 )
+
+func reportHomeDir() string {
+	if su := strings.TrimSpace(os.Getenv("SUDO_USER")); su != "" {
+		if os.Geteuid() == 0 || os.Getuid() == 0 {
+			p := filepath.Join("/home", su)
+			if st, err := os.Stat(p); err == nil && st.IsDir() {
+				return p
+			}
+		}
+	}
+	h, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(h) == "" {
+		return ""
+	}
+	return h
+}
+
+var wlanNameRe = regexp.MustCompile(`\b(wlan\d+|wlp\w+)\b`)
+
+func wifiIfaceFromSummary(active string) string {
+	active = strings.TrimSpace(active)
+	if m := wlanNameRe.FindString(strings.ToLower(active)); m != "" {
+		return m
+	}
+	return ""
+}
+
+func collectBSSIDIw(iface string) string {
+	if iface == "" || runtime.GOOS != "linux" {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "iw", "dev", iface, "link")
+	b, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		low := strings.ToLower(line)
+		if strings.HasPrefix(low, "connected to ") {
+			parts := strings.Fields(line)
+			if len(parts) >= 3 {
+				mac := strings.ToUpper(strings.TrimSuffix(parts[2], ")"))
+				if len(mac) >= 11 {
+					return mac
+				}
+			}
+		}
+		if strings.HasPrefix(low, "addr ") {
+			parts := strings.Fields(line)
+			if len(parts) >= 2 {
+				return strings.ToUpper(strings.TrimSpace(parts[1]))
+			}
+		}
+	}
+	return ""
+}
+
+func resolveWiFiBSSID(r *SystemReport) string {
+	s := collectCurrentWiFiBSSID(r.DefaultIface)
+	if s != "" {
+		return s
+	}
+	if x := collectBSSIDIw(r.DefaultIface); x != "" {
+		return x
+	}
+	if wi := wifiIfaceFromSummary(r.ActiveConn); wi != "" {
+		if x := collectBSSIDIw(wi); x != "" {
+			return x
+		}
+		if s := collectCurrentWiFiBSSID(wi); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func cleanDULine(s string) string {
+	s = strings.TrimSpace(s)
+	return strings.TrimLeft(s, "| \t")
+}
+
+func collectHomeDiskUsage(home string) (lines []string, largest string) {
+	home = strings.TrimSpace(home)
+	if home == "" || runtime.GOOS == "windows" {
+		return nil, ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 18*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "sh", "-c",
+		fmt.Sprintf("du -xh --max-depth=1 %q 2>/dev/null | sort -hr | head -n 18", home))
+	b, err := cmd.Output()
+	if err != nil {
+		return nil, ""
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		line = cleanDULine(line)
+		if line != "" {
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) > 1 {
+		for _, ln := range lines[1:] {
+			if strings.HasPrefix(ln, home+string(filepath.Separator)) || strings.Contains(ln, "\t") {
+				largest = cleanDULine(ln)
+				break
+			}
+		}
+	}
+	if largest == "" && len(lines) > 0 {
+		largest = cleanDULine(lines[0])
+	}
+	return lines, largest
+}
+
+func collectHomeListing(home string) []string {
+	home = strings.TrimSpace(home)
+	if home == "" {
+		return nil
+	}
+	de, err := os.ReadDir(home)
+	if err != nil {
+		return nil
+	}
+	sort.Slice(de, func(i, j int) bool {
+		return strings.ToLower(de[i].Name()) < strings.ToLower(de[j].Name())
+	})
+	var out []string
+	for _, e := range de {
+		if len(out) >= 90 {
+			break
+		}
+		nm := e.Name()
+		if nm == "." || nm == ".." {
+			continue
+		}
+		inf, err := e.Info()
+		mode := "??????????"
+		sz := ""
+		if err == nil {
+			mode = inf.Mode().String()
+			if inf.IsDir() {
+				sz = "<dir>"
+			} else {
+				sz = formatBytes(uint64(inf.Size()))
+			}
+		}
+		out = append(out, fmt.Sprintf("%s  %s  %s", mode, sz, nm))
+	}
+	return out
+}
 
 func collectCurrentWiFiBSSID(defaultIface string) string {
 	if defaultIface == "" || runtime.GOOS != "linux" {
@@ -29,7 +183,13 @@ func collectCurrentWiFiBSSID(defaultIface string) string {
 	if s == "" || strings.EqualFold(s, "--") {
 		return ""
 	}
-	return s
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.EqualFold(line, "--") {
+			return line
+		}
+	}
+	return ""
 }
 
 func collectBluetoothDeviceLines() []string {
@@ -212,47 +372,18 @@ func collectDBLikeProcesses() []string {
 	return hits
 }
 
-func collectHomeDiskUsage() (lines []string, largest string) {
-	home := strings.TrimSpace(os.Getenv("HOME"))
-	if home == "" || runtime.GOOS == "windows" {
-		return nil, ""
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 18*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "sh", "-c",
-		fmt.Sprintf("du -xh --max-depth=1 %q 2>/dev/null | sort -hr | head -n 18", home))
-	b, err := cmd.Output()
-	if err != nil {
-		return nil, ""
-	}
-	for _, line := range strings.Split(string(b), "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			lines = append(lines, line)
-		}
-	}
-	if len(lines) > 1 {
-		for _, ln := range lines[1:] {
-			if strings.HasPrefix(ln, home+string(filepath.Separator)) || strings.Contains(ln, "\t") {
-				largest = ln
-				break
-			}
-		}
-	}
-	if largest == "" && len(lines) > 0 {
-		largest = lines[0]
-	}
-	return lines, largest
-}
-
 func fillReportExtras(r *SystemReport) {
 	r.WiFiSecurityNote = "Wi‑Fi passphrase is never exported (security policy). Manage secrets in the OS connection editor / keyring."
-	r.WiFiBSSIDCurrent = collectCurrentWiFiBSSID(r.DefaultIface)
+	r.WiFiBSSIDCurrent = strings.TrimSpace(resolveWiFiBSSID(r))
 	r.BluetoothDevices = collectBluetoothDeviceLines()
 	r.AudioDevices = collectAudioDeviceLines()
 	r.Monitors = collectMonitorLines()
 	r.LoadedModules = collectLoadedModules()
 	r.ListenPorts = collectListenPorts()
 	r.DBLikeProcesses = collectDBLikeProcesses()
-	r.HomeTopDirs, r.HomeLargestLine = collectHomeDiskUsage()
+	home := strings.TrimSpace(r.HomeDirForReport)
+	if home != "" && runtime.GOOS != "windows" {
+		r.HomeTopDirs, r.HomeLargestLine = collectHomeDiskUsage(home)
+		r.HomeListing = collectHomeListing(home)
+	}
 }

@@ -3,6 +3,7 @@ package pcutilities
 import (
 	"fmt"
 	"html"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -94,6 +95,16 @@ func buildHTMLReport(r *SystemReport) string {
 	if ifaceRows == "" {
 		ifaceRows = "<tr><td colspan=\"4\">—</td></tr>"
 	}
+	defMAC := ""
+	for _, iface := range r.InterfaceRows {
+		if iface.Name == r.DefaultIface && strings.TrimSpace(iface.Hardware) != "" {
+			defMAC = iface.Hardware
+			break
+		}
+	}
+	if defMAC == "" {
+		defMAC = "—"
+	}
 	pub := html.EscapeString(r.PublicIP)
 	if r.PublicIP == "" {
 		pub = "— (" + html.EscapeString(r.PublicIPErr) + ")"
@@ -101,6 +112,15 @@ func buildHTMLReport(r *SystemReport) string {
 
 	chartsHTML := htmlChartsRow(r)
 	extrasHTML := htmlExtrasSections(r)
+
+	diskAggNote := ""
+	if r.DiskTotalBytes > 0 {
+		pctFree := float64(r.DiskFreeBytes) * 100 / float64(r.DiskTotalBytes)
+		if math.Abs(100-pctUsed-pctFree) > 0.75 {
+			diskAggNote = fmt.Sprintf(`<p class="muted" style="margin-top:10px;font-size:.82rem;">Summed volumes: about %.1f%% used and %.1f%% free of summed capacity; totals can differ from 100%% when mount points overlap the same storage.</p>`,
+				pctUsed, pctFree)
+		}
+	}
 
 	inner := fmt.Sprintf(`
 <body>
@@ -122,6 +142,8 @@ func buildHTMLReport(r *SystemReport) string {
 <tr><td>Local IPs</td><td>%s</td></tr>
 <tr><td>Public IP</td><td>%s</td></tr>
 <tr><td>Active</td><td>%s</td></tr>
+<tr><td>MAC (default iface)</td><td>%s</td></tr>
+<tr><td>Link speed (~1s sample)</td><td>↓ %.2f Mbps · ↑ %.2f Mbps</td></tr>
 <tr><td>Wi‑Fi BSSID (current)</td><td>%s</td></tr>
 <tr><td>Wi‑Fi passphrase</td><td>Never exported (security policy)</td></tr>
 <tr><td>Notes</td><td>%s</td></tr>
@@ -137,7 +159,7 @@ func buildHTMLReport(r *SystemReport) string {
 <tr><td>Cores</td><td>%d phys / %d logical</td></tr>
 <tr><td>GPU</td><td>%s</td></tr>
 </table>
-<div class="barwrap" title="CPU"><div class="barfill bar-cpu" style="--w:%.3f%%"></div></div>
+<div class="barwrap" title="CPU"><div class="barfill bar-cpu" style="width:%.3f%%"></div></div>
 </section>
 
 <section class="card card-c stack" style="--d:0.19s">
@@ -147,14 +169,15 @@ func buildHTMLReport(r *SystemReport) string {
 <tr><td>RAM</td><td>%s used of %s <span class="pill">%.1f%%</span></td></tr>
 <tr><td>Swap</td><td>%s / %s</td></tr>
 </table>
-<div class="barwrap"><div class="barfill bar-ram" style="--w:%.3f%%"></div></div>
+<div class="barwrap"><div class="barfill bar-ram" style="width:%.3f%%"></div></div>
 </section>
 
 <section class="card card-d stack" style="--d:0.26s">
 <h2>Storage total</h2>
 <p class="big">%s <span class="muted">used of</span> %s</p>
 <p class="pct-label"><strong>%.1f%%</strong> used</p>
-<div class="barwrap bar-fat"><div class="barfill bar-disk" style="--w:%.3f%%"></div></div>
+<div class="barwrap bar-fat"><div class="barfill bar-disk" style="width:%.3f%%"></div></div>
+%s
 </section>
 </div>
 
@@ -190,6 +213,9 @@ func buildHTMLReport(r *SystemReport) string {
 		html.EscapeString(strings.Join(dedupeKeepOrder(r.LocalIPs), ", ")),
 		pub,
 		html.EscapeString(nz(r.ActiveConn)),
+		html.EscapeString(defMAC),
+		r.NetDownMbps,
+		r.NetUpMbps,
 		html.EscapeString(nz(r.WiFiBSSIDCurrent)),
 		html.EscapeString(r.WiFiSecurityNote),
 		html.EscapeString(r.CPUModel),
@@ -208,6 +234,7 @@ func buildHTMLReport(r *SystemReport) string {
 		formatBytes(r.DiskTotalBytes),
 		pctUsed,
 		pctUsed,
+		diskAggNote,
 		ifaceRows,
 		wifiRows,
 		disksHTML.String(),
@@ -230,7 +257,7 @@ func diskCardHTML(d DiskVol, idx int) string {
 	return fmt.Sprintf(`<div class="diskcard" style="--i:%d">
 <h3>%s · %s</h3>
 <p class="meta2">%s · %s total · %s free</p>
-<div class="barwrap"><div class="barfill bar-disk" style="--w:%.3f%%"></div></div>
+<div class="barwrap"><div class="barfill bar-disk" style="width:%.3f%%"></div></div>
 <p class="pct-label" style="margin:10px 0 0;font-size:.82rem;">%.1f%% used</p>
 </div>`,
 		idx,
