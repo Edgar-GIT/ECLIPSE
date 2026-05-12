@@ -190,7 +190,7 @@ func buildHTMLReport(r *SystemReport) string {
 <table class="kv">
 <tr><th>Field</th><th>Value</th></tr>
 <tr><td>Used / total</td><td class="val">%s <span class="muted">used of</span> %s</td></tr>
-<tr><td>Used %</td><td class="val"><span class="pill">%.1f%%</span></td></tr>
+		<tr><td>Used pct</td><td class="val"><span class="pill">%.1f%%</span></td></tr>
 <tr><td>Aggregate note</td><td class="val note-cell">%s</td></tr>
 </table>
 <div class="barwrap bar-fat"><div class="barfill bar-disk" style="width:%.3f%%"></div></div>

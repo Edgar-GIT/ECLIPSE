@@ -113,20 +113,16 @@ func collectHomeDiskUsage(home string) (lines []string, largest string) {
 	}
 	for _, line := range strings.Split(string(b), "\n") {
 		line = cleanDULine(line)
+		line = strings.ReplaceAll(line, "\t", "  ")
+		line = strings.Join(strings.Fields(line), " ")
 		if line != "" {
 			lines = append(lines, line)
 		}
 	}
 	if len(lines) > 1 {
-		for _, ln := range lines[1:] {
-			if strings.HasPrefix(ln, home+string(filepath.Separator)) || strings.Contains(ln, "\t") {
-				largest = cleanDULine(ln)
-				break
-			}
-		}
-	}
-	if largest == "" && len(lines) > 0 {
-		largest = cleanDULine(lines[0])
+		largest = lines[1]
+	} else if len(lines) == 1 {
+		largest = lines[0]
 	}
 	return lines, largest
 }
@@ -138,7 +134,7 @@ func collectHomeListing(home string) []string {
 	}
 	de, err := os.ReadDir(home)
 	if err != nil {
-		return nil
+		return []string{fmt.Sprintf("(cannot read directory: %v)", err)}
 	}
 	sort.Slice(de, func(i, j int) bool {
 		return strings.ToLower(de[i].Name()) < strings.ToLower(de[j].Name())
@@ -164,6 +160,9 @@ func collectHomeListing(home string) []string {
 			}
 		}
 		out = append(out, fmt.Sprintf("%s  %s  %s", mode, sz, nm))
+	}
+	if len(out) == 0 {
+		return []string{"(no visible entries in this directory)"}
 	}
 	return out
 }

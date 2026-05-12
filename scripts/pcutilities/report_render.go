@@ -184,7 +184,7 @@ func row2Tw(tw int, k, v string, useColor bool) string {
 	if payloadW < 8 {
 		payloadW = 8
 	}
-	sep := " │ "
+	sep := " | "
 	sepW := len([]rune(sep))
 	avail := payloadW - sepW
 	if avail < 4 {
@@ -205,7 +205,7 @@ func row2Tw(tw int, k, v string, useColor bool) string {
 	if useColor {
 		left := clrKey(ks) + strings.Repeat(" ", padK)
 		right := clrDim(vs) + strings.Repeat(" ", padV)
-		return clrBorder("║") + " " + left + clrBorder(sep) + right + " " + clrBorder("║")
+		return clrBorder("║") + " " + left + sep + right + " " + clrBorder("║")
 	}
 	return "║ " + ks + strings.Repeat(" ", padK) + sep + vs + strings.Repeat(" ", padV) + " ║"
 }
@@ -236,7 +236,7 @@ func tableMultiHeaderTw(tw int, title string, headers []string, rows [][]string,
 	if payloadW < n*4 {
 		payloadW = n * 4
 	}
-	sepCell := " │ "
+	sepCell := " | "
 	sepW := len([]rune(sepCell)) * (n - 1)
 	avail := payloadW - sepW
 	if avail < n {
@@ -303,6 +303,40 @@ func tableMultiHeaderTw(tw int, title string, headers []string, rows [][]string,
 			b.WriteString(clrBorder("║") + " " + line + " " + clrBorder("║") + "\n")
 		} else {
 			b.WriteString("║ " + line + " ║\n")
+		}
+	}
+	b.WriteString(boxBottomTw(tw, useColor))
+	b.WriteByte('\n')
+	return b.String()
+}
+
+func tableMonoLinesTw(tw int, title string, lines []string, useColor bool) string {
+	if len(lines) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(boxTopTw(tw, title, useColor))
+	b.WriteByte('\n')
+	payloadW := tw - 4
+	if payloadW < 8 {
+		payloadW = 8
+	}
+	for _, raw := range lines {
+		line := strings.TrimSpace(raw)
+		line = strings.ReplaceAll(line, "\t", "  ")
+		line = strings.Join(strings.Fields(line), " ")
+		if line == "" {
+			continue
+		}
+		cs := truncateRunes(line, payloadW)
+		pad := payloadW - len([]rune(cs))
+		if pad < 0 {
+			pad = 0
+		}
+		if useColor {
+			b.WriteString(clrBorder("║") + " " + clrDim(cs) + strings.Repeat(" ", pad) + " " + clrBorder("║") + "\n")
+		} else {
+			b.WriteString(fmt.Sprintf("║ %s%s ║\n", cs, strings.Repeat(" ", pad)))
 		}
 	}
 	b.WriteString(boxBottomTw(tw, useColor))
@@ -522,47 +556,27 @@ func RenderReportTextWidth(r *SystemReport, useColor bool, tw int) string {
 	}
 
 	if len(r.ListenPorts) > 0 {
-		var rows [][]string
-		for _, ln := range r.ListenPorts {
-			rows = append(rows, []string{ln})
-		}
-		o.WriteString(tableMultiHeaderTw(tw, "Listening sockets (sample)", []string{"Entry"}, rows, useColor))
+		o.WriteString(tableMonoLinesTw(tw, "Listening sockets (sample)", r.ListenPorts, useColor))
 		o.WriteString("\n")
 	}
 
 	if len(r.DBLikeProcesses) > 0 {
-		var rows [][]string
-		for _, ln := range r.DBLikeProcesses {
-			rows = append(rows, []string{ln})
-		}
-		o.WriteString(tableMultiHeaderTw(tw, "Database-like processes (sample)", []string{"PID · name · cmdline"}, rows, useColor))
+		o.WriteString(tableMonoLinesTw(tw, "Database-like processes (sample)", r.DBLikeProcesses, useColor))
 		o.WriteString("\n")
 	}
 
 	if len(r.BluetoothDevices) > 0 {
-		var rows [][]string
-		for _, ln := range r.BluetoothDevices {
-			rows = append(rows, []string{ln})
-		}
-		o.WriteString(tableMultiHeaderTw(tw, "Bluetooth devices", []string{"Address · name"}, rows, useColor))
+		o.WriteString(tableMonoLinesTw(tw, "Bluetooth devices", r.BluetoothDevices, useColor))
 		o.WriteString("\n")
 	}
 
 	if len(r.AudioDevices) > 0 {
-		var rows [][]string
-		for _, ln := range r.AudioDevices {
-			rows = append(rows, []string{ln})
-		}
-		o.WriteString(tableMultiHeaderTw(tw, "Audio devices / sinks", []string{"Entry"}, rows, useColor))
+		o.WriteString(tableMonoLinesTw(tw, "Audio devices / sinks", r.AudioDevices, useColor))
 		o.WriteString("\n")
 	}
 
 	if len(r.Monitors) > 0 {
-		var rows [][]string
-		for _, ln := range r.Monitors {
-			rows = append(rows, []string{ln})
-		}
-		o.WriteString(tableMultiHeaderTw(tw, "Displays (xrandr)", []string{"Line"}, rows, useColor))
+		o.WriteString(tableMonoLinesTw(tw, "Displays (xrandr)", r.Monitors, useColor))
 		o.WriteString("\n")
 	}
 
@@ -576,11 +590,7 @@ func RenderReportTextWidth(r *SystemReport, useColor bool, tw int) string {
 		homePath = os.Getenv("HOME")
 	}
 	if len(r.HomeTopDirs) > 0 {
-		var rows [][]string
-		for _, ln := range r.HomeTopDirs {
-			rows = append(rows, []string{ln})
-		}
-		o.WriteString(tableMultiHeaderTw(tw, fmt.Sprintf("Home disk usage (top-level, %s)", homePath), []string{"du line"}, rows, useColor))
+		o.WriteString(tableMonoLinesTw(tw, fmt.Sprintf("Home disk usage (top-level, %s)", homePath), r.HomeTopDirs, useColor))
 		o.WriteString("\n")
 		if r.HomeLargestLine != "" {
 			o.WriteString(tableKeyValueTw(tw, "Home — largest entry (from du)", [][2]string{{"Line", r.HomeLargestLine}}, useColor))
@@ -588,11 +598,7 @@ func RenderReportTextWidth(r *SystemReport, useColor bool, tw int) string {
 		}
 	}
 	if len(r.HomeListing) > 0 {
-		var rows [][]string
-		for _, ln := range r.HomeListing {
-			rows = append(rows, []string{ln})
-		}
-		o.WriteString(tableMultiHeaderTw(tw, fmt.Sprintf("Home listing (%s)", homePath), []string{"ls-style"}, rows, useColor))
+		o.WriteString(tableMonoLinesTw(tw, fmt.Sprintf("Home listing (%s)", homePath), r.HomeListing, useColor))
 		o.WriteString("\n")
 	}
 
