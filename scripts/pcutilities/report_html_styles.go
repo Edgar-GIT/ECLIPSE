@@ -28,7 +28,7 @@ body{
 @media (prefers-reduced-motion:reduce){
   .bg-aurora,.card,.barfill,.glitch::after,.pie,.hbar-fill{animation:none!important}
   .barfill,.hbar-fill{width:var(--w)!important}
-  .donut-arc{stroke-dashoffset:0!important}
+  .pie{transform:none!important;opacity:1!important}
   .card{opacity:1;transform:none}
 }
 .wrap{position:relative;z-index:1;max-width:1180px;margin:0 auto;padding:28px 22px 56px}
@@ -125,13 +125,18 @@ tr:hover td{background:rgba(0,245,212,.06)}
 .donut-wrap{text-align:center;min-width:140px}
 .donut-wrap figcaption{margin-top:8px;font-size:.78rem;color:#9aaee5;max-width:160px;margin-left:auto;margin-right:auto}
 .donut-wrap strong{color:#e8f0ff;font-size:1rem}
-.donut-arc{
-  fill:none;stroke-width:11;stroke-linecap:round;
-  transform:rotate(-90deg);transform-origin:50% 50%;
-  animation:donutdraw 1.25s cubic-bezier(.22,1,.36,1) forwards;
+.pie{
+  width:118px;height:118px;margin:0 auto;border-radius:50%;
+  background:conic-gradient(var(--c1) calc(var(--p)*1%),#242a42 0);
+  -webkit-mask:radial-gradient(farthest-side,#0000 58%,#000 59%);
+  mask:radial-gradient(farthest-side,#0000 58%,#000 59%);
+  box-shadow:0 0 22px rgba(0,245,212,.12);
+  animation:piezoom .85s cubic-bezier(.22,1,.36,1) backwards;
 }
-@keyframes donutdraw{from{stroke-dashoffset:238.8}to{stroke-dashoffset:0}}
-.donut-track{fill:none;stroke:rgba(255,255,255,.09);stroke-width:11}
+@keyframes piezoom{
+  from{transform:scale(.55) rotate(-20deg);opacity:0}
+  to{transform:scale(1) rotate(0);opacity:1}
+}
 .hbar-block{flex:1;min-width:180px;max-width:320px;margin-bottom:8px}
 .hbar-label{font-size:.72rem;color:#8ebfff;margin-bottom:6px;text-transform:uppercase;letter-spacing:.1em}
 .hbar-track{height:12px;border-radius:999px;background:rgba(0,0,0,.45);border:1px solid rgba(0,245,212,.2);overflow:hidden}

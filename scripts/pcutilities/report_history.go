@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"syscall"
 
 	"programa/utils"
 )
@@ -260,8 +261,10 @@ func openHTMLInBrowser(absPath, fileURL string) error {
 		cmd := exec.Command(path, args...)
 		cmd.Stdout = nil
 		cmd.Stderr = nil
-		err = cmd.Start()
-		return err == nil
+		if runtime.GOOS == "linux" {
+			cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		}
+		return cmd.Start() == nil
 	}
 
 	if env := strings.TrimSpace(os.Getenv("BROWSER")); env != "" {
@@ -283,6 +286,11 @@ func openHTMLInBrowser(absPath, fileURL string) error {
 		{"firefox-esr", fileURL},
 		{"librewolf", "--new-tab", fileURL},
 		{"librewolf", fileURL},
+		{"chromium", "--new-window", fileURL},
+		{"chromium-browser", "--new-window", fileURL},
+		{"google-chrome-stable", "--new-window", fileURL},
+		{"google-chrome", "--new-window", fileURL},
+		{"brave-browser", "--new-window", fileURL},
 	}
 	for _, a := range ffArgs {
 		if try(a[0], a[1:]...) {
@@ -300,9 +308,12 @@ func openHTMLInBrowser(absPath, fileURL string) error {
 	if try("gio", "open", fileURL) {
 		return nil
 	}
+	if try("handlr", "open", fileURL) {
+		return nil
+	}
 	if try("xdg-open", absPath) {
 		return nil
 	}
 
-	return fmt.Errorf("nenhum firefox, xdg-open ou BROWSER funcionou")
+	return fmt.Errorf("nenhum browser encontrado (firefox/chromium/xdg-open/BROWSER). Flatpak Firefox pode bloquear file:// — abre o ficheiro manualmente ou define BROWSER=chromium")
 }

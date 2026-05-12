@@ -64,13 +64,6 @@ func htmlMonoBlock(title string, lines []string, max int) string {
 
 func htmlExtrasSections(r *SystemReport) string {
 	var b strings.Builder
-	b.WriteString(`<section class="card wide stack"><h2>Wi‑Fi &amp; privacy</h2><table>
-<tr><th>Field</th><th>Value</th></tr>`)
-	b.WriteString(fmt.Sprintf("<tr><td>Current BSSID</td><td>%s</td></tr>",
-		html.EscapeString(nz(r.WiFiBSSIDCurrent))))
-	b.WriteString(fmt.Sprintf("<tr><td>Policy</td><td>%s</td></tr></table></section>",
-		html.EscapeString(r.WiFiSecurityNote)))
-
 	if s := htmlMonoBlock("Listening sockets (sample)", r.ListenPorts, 60); s != "" {
 		b.WriteString(s)
 	}
