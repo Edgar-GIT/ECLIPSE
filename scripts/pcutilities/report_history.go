@@ -6,10 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
-	"syscall"
 
 	"programa/utils"
 )
@@ -78,13 +76,13 @@ func ViewPCReportHistory() {
 			utils.ClearTerminal()
 			fmt.Printf("\n%s── Relatório: %s ──%s\n\n", utils.Blue, base, utils.Reset)
 			if strings.HasSuffix(strings.ToLower(base), ".html") {
-				fmt.Printf("%sSe o Firefox não abriu, usa [R] ou abre o ficheiro à mão (caminho abaixo).%s\n\n", utils.Yellow, utils.Reset)
+				fmt.Printf("%sSe o browser não abriu, usa [R] ou: xdg-open <caminho abaixo>%s\n\n", utils.Yellow, utils.Reset)
 			}
 			abs, _ := filepath.Abs(path)
 			fmt.Printf("%s\n\n", utils.RGBText(120, 130, 160, abs))
 			fmt.Printf("%s[Enter]  Voltar à lista de reports%s\n", utils.Green, utils.Reset)
 			fmt.Printf("%s[0]      Voltar ao menu History%s\n", utils.Yellow, utils.Reset)
-			fmt.Printf("%s[R]      Reabrir (Firefox / browser)%s\n", utils.Blue, utils.Reset)
+			fmt.Printf("%s[R]      Reabrir no browser%s\n", utils.Blue, utils.Reset)
 			fmt.Printf("%s[X]      Eliminar este ficheiro%s\n", utils.Red, utils.Reset)
 			fmt.Printf("\n%sOpção: %s", utils.Green, utils.Reset)
 			sub, _ := reader.ReadString('\n')
@@ -177,23 +175,6 @@ func listReportFiles(dir string) ([]reportEntry, error) {
 	return out, nil
 }
 
-func htmlFileURL(abs string) string {
-	abs = filepath.Clean(abs)
-	if runtime.GOOS == "windows" {
-		p := filepath.ToSlash(abs)
-		if len(p) >= 2 && p[1] == ':' {
-			return "file:///" + p
-		}
-		return "file://" + p
-	}
-	if !filepath.IsAbs(abs) {
-		if a, err := filepath.Abs(abs); err == nil {
-			abs = a
-		}
-	}
-	return "file://" + filepath.ToSlash(abs)
-}
-
 func openReportFile(fullPath, base string) {
 	utils.ClearTerminal()
 	absPath, err := filepath.Abs(fullPath)
@@ -205,12 +186,11 @@ func openReportFile(fullPath, base string) {
 		return
 	}
 	if strings.HasSuffix(strings.ToLower(base), ".html") {
-		fileURL := htmlFileURL(absPath)
-		if err := openHTMLInBrowser(absPath, fileURL); err != nil {
+		if err := utils.OpenLocalHTML(absPath); err != nil {
 			fmt.Printf("%s[!] Abrir HTML: %v%s\n", utils.Red, err, utils.Reset)
-			fmt.Printf("%sTenta: firefox %s%s\n", utils.Yellow, fileURL, utils.Reset)
+			fmt.Printf("%sTenta: xdg-open %q%s\n", utils.Yellow, absPath, utils.Reset)
 		} else {
-			fmt.Printf("%sPedido enviado ao Firefox / browser (URL local).%s\n", utils.Green, utils.Reset)
+			fmt.Printf("%sPedido enviado ao browser predefinido.%s\n", utils.Green, utils.Reset)
 		}
 		return
 	}
@@ -236,84 +216,4 @@ func openReportFile(fullPath, base string) {
 		}
 	}
 	fmt.Print(text)
-}
-
-func openHTMLInBrowser(absPath, fileURL string) error {
-	if runtime.GOOS == "windows" {
-		if err := exec.Command("rundll32", "url.dll,FileProtocolHandler", fileURL).Start(); err == nil {
-			return nil
-		}
-		if err := exec.Command("cmd", "/c", "start", "", fileURL).Start(); err == nil {
-			return nil
-		}
-	}
-	if runtime.GOOS == "darwin" {
-		if err := exec.Command("open", fileURL).Start(); err == nil {
-			return nil
-		}
-	}
-
-	try := func(name string, args ...string) bool {
-		path, err := exec.LookPath(name)
-		if err != nil {
-			return false
-		}
-		cmd := exec.Command(path, args...)
-		cmd.Stdout = nil
-		cmd.Stderr = nil
-		if runtime.GOOS == "linux" {
-			cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-		}
-		return cmd.Start() == nil
-	}
-
-	if env := strings.TrimSpace(os.Getenv("BROWSER")); env != "" {
-		parts := strings.Fields(env)
-		if len(parts) > 0 {
-			bin := parts[0]
-			extra := append([]string{}, parts[1:]...)
-			extra = append(extra, fileURL)
-			if try(bin, extra...) {
-				return nil
-			}
-		}
-	}
-
-	ffArgs := [][]string{
-		{"firefox", "--new-tab", fileURL},
-		{"firefox", fileURL},
-		{"firefox-esr", "--new-tab", fileURL},
-		{"firefox-esr", fileURL},
-		{"librewolf", "--new-tab", fileURL},
-		{"librewolf", fileURL},
-		{"chromium", "--new-window", fileURL},
-		{"chromium-browser", "--new-window", fileURL},
-		{"google-chrome-stable", "--new-window", fileURL},
-		{"google-chrome", "--new-window", fileURL},
-		{"brave-browser", "--new-window", fileURL},
-	}
-	for _, a := range ffArgs {
-		if try(a[0], a[1:]...) {
-			return nil
-		}
-	}
-
-	if try("flatpak", "run", "org.mozilla.firefox", fileURL) {
-		return nil
-	}
-
-	if try("xdg-open", fileURL) {
-		return nil
-	}
-	if try("gio", "open", fileURL) {
-		return nil
-	}
-	if try("handlr", "open", fileURL) {
-		return nil
-	}
-	if try("xdg-open", absPath) {
-		return nil
-	}
-
-	return fmt.Errorf("nenhum browser encontrado (firefox/chromium/xdg-open/BROWSER). Flatpak Firefox pode bloquear file:// — abre o ficheiro manualmente ou define BROWSER=chromium")
 }

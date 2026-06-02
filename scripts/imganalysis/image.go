@@ -351,60 +351,12 @@ func normalizeAndValidatePath(inputPath string) (string, error) {
 }
 
 func selectImageFileDialog() (string, error) {
-	switch utils.DetectOS() {
-	case "windows":
-		psScript := "$ErrorActionPreference='Stop';" +
-			"Add-Type -AssemblyName System.Windows.Forms;" +
-			"$f=New-Object System.Windows.Forms.OpenFileDialog;" +
-			"$f.Filter='Image Files|*.jpg;*.jpeg;*.png;*.gif;*.bmp;*.tif;*.tiff;*.webp;*.heic;*.avif|All Files|*.*';" +
-			"if($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK){[Console]::Out.Write($f.FileName)}"
-		out, err := exec.Command("powershell", "-NoProfile", "-Command", psScript).Output()
-		if err != nil {
-			return "", fmt.Errorf("failed to open file picker on Windows: %w", err)
-		}
-		if strings.TrimSpace(string(out)) == "" {
-			return "", fmt.Errorf("no file selected")
-		}
-		return strings.TrimSpace(string(out)), nil
-
-	case "darwin":
-		out, err := exec.Command("osascript", "-e", `POSIX path of (choose file of type {"public.image"})`).Output()
-		if err != nil {
-			return "", fmt.Errorf("failed to open file picker on macOS: %w", err)
-		}
-		if strings.TrimSpace(string(out)) == "" {
-			return "", fmt.Errorf("no file selected")
-		}
-		return strings.TrimSpace(string(out)), nil
-
-	default:
-		if _, err := exec.LookPath("zenity"); err == nil {
-			out, zenErr := exec.Command(
-				"zenity",
-				"--file-selection",
-				"--title=Select an image",
-				"--file-filter=Images | *.jpg *.jpeg *.png *.gif *.bmp *.tif *.tiff *.webp *.heic *.avif",
-				"--file-filter=All files | *",
-			).Output()
-			if zenErr == nil && strings.TrimSpace(string(out)) != "" {
-				return strings.TrimSpace(string(out)), nil
-			}
-		}
-
-		if _, err := exec.LookPath("kdialog"); err == nil {
-			out, kErr := exec.Command(
-				"kdialog",
-				"--getopenfilename",
-				"",
-				"Images (*.jpg *.jpeg *.png *.gif *.bmp *.tif *.tiff *.webp *.heic *.avif)",
-			).Output()
-			if kErr == nil && strings.TrimSpace(string(out)) != "" {
-				return strings.TrimSpace(string(out)), nil
-			}
-		}
-
-		return "", fmt.Errorf("file picker not available (install zenity or kdialog), use manual full path")
-	}
+	home, _ := os.UserHomeDir()
+	return utils.PickOpenFile(utils.FilePickerConfig{
+		Title:      "Select an image",
+		DefaultDir: home,
+		FileFilter: "Images | *.jpg *.jpeg *.png *.gif *.bmp *.tif *.tiff *.webp *.heic *.avif",
+	})
 }
 
 func analyzeImage(path string) (ImageAnalysisResult, error) {
@@ -1238,7 +1190,7 @@ func promptOpenMapAfterScan(reader *bufio.Reader, rec ImageAnalysisRecord) {
 		return
 	}
 
-	if err := openURLInDefaultApp(targetURL); err != nil {
+	if err := utils.OpenURL(targetURL); err != nil {
 		fmt.Printf("%s[!] Could not open map automatically: %v%s\n", utils.Yellow, err, utils.Reset)
 		fmt.Printf("%sURL:%s %s\n", utils.Green, utils.Reset, targetURL)
 		return
@@ -1249,23 +1201,6 @@ func promptOpenMapAfterScan(reader *bufio.Reader, rec ImageAnalysisRecord) {
 
 func buildGoogleMapsURL(lat, lon float64) string {
 	return fmt.Sprintf("https://www.google.com/maps?q=%.7f,%.7f", lat, lon)
-}
-
-func openURLInDefaultApp(targetURL string) error {
-	switch utils.DetectOS() {
-	case "windows":
-		return exec.Command("cmd", "/c", "start", "", targetURL).Start()
-	case "darwin":
-		return exec.Command("open", targetURL).Start()
-	default:
-		if commandExists("xdg-open") {
-			return exec.Command("xdg-open", targetURL).Start()
-		}
-		if commandExists("gio") {
-			return exec.Command("gio", "open", targetURL).Start()
-		}
-		return fmt.Errorf("no URL opener found (xdg-open/gio)")
-	}
 }
 
 func saveImageHistoryRecord(record ImageAnalysisRecord) error {
