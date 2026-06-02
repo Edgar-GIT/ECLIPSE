@@ -11,6 +11,7 @@ teste
 # JSON files
 *.json
 reports/
+target/
 # Report directories
 image_reports/
 osint_reports/

