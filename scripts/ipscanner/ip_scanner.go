@@ -1432,6 +1432,7 @@ func IpScanner() {
 	fmt.Printf("%s[3] My public IP%s\n", utils.Green, utils.Reset)
 	fmt.Printf("%s[4] Complete Mode (safe full discovery + enrichment)%s\n", utils.Green, utils.Reset)
 	fmt.Printf("%s[5] Flags quick help%s\n", utils.Green, utils.Reset)
+	utils.PrintReturnOption("6")
 	fmt.Printf("\n%sTip: choose Flags quick help or type help in Advanced options.%s\n", utils.Yellow, utils.Reset)
 	fmt.Printf("\n%sOption: %s", utils.Green, utils.Reset)
 
@@ -1495,6 +1496,8 @@ func IpScanner() {
 	case "5":
 		printIPScannerFlagHelp()
 		utils.WaitForEnter(reader)
+		return
+	case "6":
 		return
 	default:
 		fmt.Printf("\n%sInvalid option!%s\n", utils.Red, utils.Reset)
