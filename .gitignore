@@ -13,7 +13,6 @@ teste
 reports/
 target/
 # Report directories
-image_reports/
 osint_reports/
 target/osint_reports/
 target/pc_reports/

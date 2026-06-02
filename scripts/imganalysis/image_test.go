@@ -50,16 +50,19 @@ func TestSaveImageHistoryRecordUsesReportsImageReportsDir(t *testing.T) {
 func withTempWorkingDir(t *testing.T) {
 	t.Helper()
 
+	tmp := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmp, "go.mod"), []byte("module test\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ECLIPSE_ROOT", tmp)
+
 	oldWd, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	tmp := t.TempDir()
 	if err := os.Chdir(tmp); err != nil {
 		t.Fatal(err)
 	}
-
 	t.Cleanup(func() {
 		if err := os.Chdir(oldWd); err != nil {
 			t.Fatal(err)

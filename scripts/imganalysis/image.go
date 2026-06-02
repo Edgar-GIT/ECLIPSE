@@ -28,12 +28,6 @@ import (
 	"time"
 )
 
-var (
-	imageReportsDir        = filepath.Join("reports", "image_reports")
-	imageHistoryFile       = filepath.Join(imageReportsDir, "image_analysis_history.json")
-	legacyImageHistoryFile = "image_analysis_history.json"
-)
-
 type FileHashes struct {
 	MD5    string `json:"md5"`
 	SHA1   string `json:"sha1"`
@@ -152,7 +146,7 @@ func ImageAnalysis() {
 	if err := saveImageHistoryRecord(result.Record); err != nil {
 		fmt.Printf("%s[!] Could not save JSON history: %v%s\n", utils.Yellow, err, utils.Reset)
 	} else {
-		fmt.Printf("%s[✓] JSON history updated: %s%s\n", utils.Green, imageHistoryFile, utils.Reset)
+		fmt.Printf("%s[✓] JSON history updated: %s%s\n", utils.Green, imageHistoryFile(), utils.Reset)
 	}
 
 	promptOpenMapAfterScan(reader, result.Record)
@@ -223,7 +217,7 @@ func ViewImageAnalysisHistory() {
 		showStoredImageReport(record.ReportFile)
 		utils.PauseForInput()
 	case "3":
-		if err := os.Remove(imageHistoryFile); err != nil {
+		if err := os.Remove(imageHistoryFile()); err != nil {
 			fmt.Printf("%sFailed to delete history: %v%s\n", utils.Red, err, utils.Reset)
 		} else {
 			fmt.Printf("%s✓ Image history deleted successfully!%s\n", utils.Green, utils.Reset)
@@ -1290,11 +1284,12 @@ func saveImageHistoryRecord(record ImageAnalysisRecord) error {
 		return err
 	}
 
-	if err := os.MkdirAll(filepath.Dir(imageHistoryFile), 0755); err != nil {
+	historyPath := imageHistoryFile()
+	if err := os.MkdirAll(filepath.Dir(historyPath), 0755); err != nil {
 		return err
 	}
 
-	return os.WriteFile(imageHistoryFile, data, 0644)
+	return os.WriteFile(historyPath, data, 0644)
 }
 
 func loadImageHistory() (*ImageAnalysisHistory, error) {
@@ -1312,26 +1307,27 @@ func loadImageHistory() (*ImageAnalysisHistory, error) {
 }
 
 func readImageHistoryData() ([]byte, error) {
-	data, err := os.ReadFile(imageHistoryFile)
-	if err == nil {
-		return data, nil
+	for _, path := range []string{imageHistoryFile(), legacyImageHistoryFile()} {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			return data, nil
+		}
+		if !os.IsNotExist(err) {
+			return nil, err
+		}
 	}
-
-	if !os.IsNotExist(err) || imageHistoryFile == legacyImageHistoryFile {
-		return nil, err
-	}
-
-	return os.ReadFile(legacyImageHistoryFile)
+	return nil, os.ErrNotExist
 }
 
 func saveImageReport(imagePath, report string) (string, error) {
-	if err := os.MkdirAll(imageReportsDir, 0755); err != nil {
+	dir := imageReportsDir()
+	if err := os.MkdirAll(dir, 0755); err != nil {
 		return "", err
 	}
 
 	base := strings.TrimSuffix(filepath.Base(imagePath), filepath.Ext(imagePath))
 	timestamp := time.Now().Format("20060102_150405")
-	outPath := filepath.Join(imageReportsDir, fmt.Sprintf("%s_%s_report.txt", base, timestamp))
+	outPath := filepath.Join(dir, fmt.Sprintf("%s_%s_report.txt", base, timestamp))
 
 	if err := os.WriteFile(outPath, []byte(report), 0644); err != nil {
 		return "", err
