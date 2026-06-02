@@ -13,10 +13,10 @@ import (
 var errPickerCanceled = errors.New("file picker canceled")
 
 type FilePickerConfig struct {
-	Title       string
-	DefaultDir  string
-	FileFilter  string
-	SaveAs      string
+	Title      string
+	DefaultDir string
+	FileFilter string
+	SaveAs     string
 }
 
 func PickOpenFile(cfg FilePickerConfig) (string, error) {
@@ -126,64 +126,32 @@ func pickOpenFileDarwin(cfg FilePickerConfig) (string, error) {
 
 func pickOpenFileLinux(cfg FilePickerConfig) (string, error) {
 	startDir := cfg.DefaultDir + string(os.PathSeparator)
-	var attempts []pickerAttempt
-
-	if isKDE() {
-		attempts = append(attempts,
-			pickerAttempt{"kdialog", kdialogOpenArgs(cfg, startDir)},
-			pickerAttempt{"yad", yadOpenArgs(cfg, startDir, false)},
-			pickerAttempt{"zenity", zenityOpenArgs(cfg, startDir)},
-			pickerAttempt{"qarma", qarmaOpenArgs(cfg, startDir)},
-		)
-	} else {
-		attempts = append(attempts,
-			pickerAttempt{"zenity", zenityOpenArgs(cfg, startDir)},
-			pickerAttempt{"yad", yadOpenArgs(cfg, startDir, false)},
-			pickerAttempt{"kdialog", kdialogOpenArgs(cfg, startDir)},
-			pickerAttempt{"qarma", qarmaOpenArgs(cfg, startDir)},
-		)
-	}
-
-	var lastErr error
-	for _, attempt := range attempts {
-		selected, err := runPickerCommand(attempt.name, attempt.args...)
-		if err == nil {
-			return selected, nil
-		}
-		if errors.Is(err, errPickerCanceled) {
-			return "", err
-		}
-		lastErr = err
-	}
-
-	hint := "instala kde-cli-tools (kdialog), zenity ou yad"
-	if isKDE() {
-		hint = "instala kde-cli-tools (pacman -S kde-cli-tools) para o diálogo nativo KDE, ou zenity/yad"
-	}
-	if lastErr != nil {
-		return "", fmt.Errorf("file picker indisponível (%s): %w", hint, lastErr)
-	}
-	return "", fmt.Errorf("file picker indisponível (%s)", hint)
+	return runLinuxPickerAttempts(linuxOpenPickerAttempts(cfg, startDir))
 }
 
 func pickSaveFileLinux(cfg FilePickerConfig) (string, error) {
 	startPath := filepath.Join(cfg.DefaultDir, cfg.SaveAs)
-	var attempts []pickerAttempt
+	return runLinuxPickerAttempts(linuxSavePickerAttempts(cfg, startPath))
+}
 
-	if isKDE() {
-		attempts = append(attempts,
-			pickerAttempt{"kdialog", kdialogSaveArgs(cfg, startPath)},
-			pickerAttempt{"yad", yadOpenArgs(cfg, startPath, true)},
-			pickerAttempt{"zenity", zenitySaveArgs(cfg, startPath)},
-		)
-	} else {
-		attempts = append(attempts,
-			pickerAttempt{"zenity", zenitySaveArgs(cfg, startPath)},
-			pickerAttempt{"yad", yadOpenArgs(cfg, startPath, true)},
-			pickerAttempt{"kdialog", kdialogSaveArgs(cfg, startPath)},
-		)
+func linuxOpenPickerAttempts(cfg FilePickerConfig, startDir string) []pickerAttempt {
+	return []pickerAttempt{
+		{"zenity", zenityOpenArgs(cfg, startDir)},
+		{"kdialog", kdialogOpenArgs(cfg, startDir)},
+		{"yad", yadOpenArgs(cfg, startDir, false)},
+		{"qarma", qarmaOpenArgs(cfg, startDir)},
 	}
+}
 
+func linuxSavePickerAttempts(cfg FilePickerConfig, startPath string) []pickerAttempt {
+	return []pickerAttempt{
+		{"zenity", zenitySaveArgs(cfg, startPath)},
+		{"kdialog", kdialogSaveArgs(cfg, startPath)},
+		{"yad", yadOpenArgs(cfg, startPath, true)},
+	}
+}
+
+func runLinuxPickerAttempts(attempts []pickerAttempt) (string, error) {
 	var lastErr error
 	for _, attempt := range attempts {
 		selected, err := runPickerCommand(attempt.name, attempt.args...)
@@ -195,10 +163,12 @@ func pickSaveFileLinux(cfg FilePickerConfig) (string, error) {
 		}
 		lastErr = err
 	}
+
+	hint := "instala um diálogo gráfico: zenity (GTK), yad, ou kdialog (kde-cli-tools)"
 	if lastErr != nil {
-		return "", fmt.Errorf("save dialog indisponível: %w", lastErr)
+		return "", fmt.Errorf("file picker indisponível (%s): %w", hint, lastErr)
 	}
-	return "", fmt.Errorf("save dialog indisponível (instala zenity, yad ou kde-cli-tools)")
+	return "", fmt.Errorf("file picker indisponível (%s)", hint)
 }
 
 type pickerAttempt struct {

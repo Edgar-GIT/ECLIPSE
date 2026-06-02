@@ -25,7 +25,7 @@ func OpenURL(targetURL string) error {
 	case "darwin":
 		return startDetached("open", targetURL)
 	default:
-		return openOnLinux(targetURL, "")
+		return openOnLinux("", targetURL)
 	}
 }
 
@@ -74,20 +74,36 @@ func PathToFileURL(absPath string) string {
 	return u.String()
 }
 
-func openOnLinux(localPath, fileURL string) error {
+func openOnLinux(localPath, remoteOrFileURL string) error {
 	if strings.HasPrefix(strings.ToLower(localPath), "http://") || strings.HasPrefix(strings.ToLower(localPath), "https://") {
-		fileURL = localPath
+		remoteOrFileURL = localPath
 		localPath = ""
 	}
 
-	var attempts []commandAttempt
+	attempts := linuxOpenAttempts(localPath, remoteOrFileURL)
 
-	if isKDE() {
-		attempts = append(attempts,
-			commandAttempt{"kde-open5", copyArgs(localPath)},
-			commandAttempt{"kde-open", copyArgs(localPath)},
-		)
+	var failures []string
+	for _, attempt := range attempts {
+		if len(attempt.args) == 0 {
+			continue
+		}
+		if err := startDetached(attempt.name, attempt.args...); err == nil {
+			return nil
+		} else {
+			failures = append(failures, fmt.Sprintf("%s: %v", attempt.name, err))
+		}
 	}
+
+	target := localPath
+	if target == "" {
+		target = remoteOrFileURL
+	}
+	return fmt.Errorf("não foi possível abrir %q (tenta: xdg-open %q). Detalhes: %s",
+		target, localPath, strings.Join(failures, "; "))
+}
+
+func linuxOpenAttempts(localPath, fileURL string) []commandAttempt {
+	var attempts []commandAttempt
 
 	if env := strings.TrimSpace(os.Getenv("BROWSER")); env != "" {
 		parts := strings.Fields(env)
@@ -106,54 +122,64 @@ func openOnLinux(localPath, fileURL string) error {
 		attempts = append(attempts,
 			commandAttempt{"xdg-open", []string{localPath}},
 			commandAttempt{"gio", []string{"open", localPath}},
-			commandAttempt{"firefox", []string{"--new-tab", localPath}},
-			commandAttempt{"firefox", []string{localPath}},
-			commandAttempt{"firefox-esr", []string{"--new-tab", localPath}},
-			commandAttempt{"firefox-esr", []string{localPath}},
-			commandAttempt{"librewolf", []string{"--new-tab", localPath}},
-			commandAttempt{"librewolf", []string{localPath}},
-			commandAttempt{"flatpak", []string{"run", "--filesystem=host", "org.mozilla.firefox", localPath}},
-			commandAttempt{"flatpak", []string{"run", "--filesystem=host:ro", "org.mozilla.firefox", localPath}},
-			commandAttempt{"flatpak", []string{"run", "--filesystem=host", "io.gitlab.librewolf-community", localPath}},
-			commandAttempt{"chromium", []string{localPath}},
-			commandAttempt{"chromium-browser", []string{localPath}},
-			commandAttempt{"google-chrome-stable", []string{localPath}},
-			commandAttempt{"google-chrome", []string{localPath}},
-			commandAttempt{"brave-browser", []string{localPath}},
+			commandAttempt{"mimeopen", []string{"-L", localPath}},
+			commandAttempt{"kde-open5", []string{localPath}},
+			commandAttempt{"kde-open", []string{localPath}},
+			commandAttempt{"exo-open", []string{localPath}},
+			commandAttempt{"gnome-open", []string{localPath}},
+			commandAttempt{"handlr", []string{"open", localPath}},
 		)
+		attempts = append(attempts, linuxBrowserAttempts(localPath)...)
 	}
 
-	if fileURL != "" {
+	if fileURL != "" && fileURL != localPath {
 		attempts = append(attempts,
 			commandAttempt{"xdg-open", []string{fileURL}},
 			commandAttempt{"gio", []string{"open", fileURL}},
-			commandAttempt{"flatpak", []string{"run", "--filesystem=host", "org.mozilla.firefox", fileURL}},
-			commandAttempt{"firefox", []string{"--new-tab", fileURL}},
-			commandAttempt{"firefox", []string{fileURL}},
+			commandAttempt{"handlr", []string{"open", fileURL}},
 		)
+		attempts = append(attempts, linuxBrowserAttempts(fileURL)...)
 	}
 
-	var failures []string
-	for _, attempt := range attempts {
-		if len(attempt.args) == 0 {
-			continue
-		}
-		if err := startDetached(attempt.name, attempt.args...); err == nil {
-			return nil
-		} else {
-			failures = append(failures, fmt.Sprintf("%s %v", attempt.name, err))
-		}
-	}
-
-	return fmt.Errorf("não foi possível abrir (tenta: xdg-open %q ou instala kde-cli-tools/zenity). Detalhes: %s",
-		localPath, strings.Join(failures, "; "))
+	return dedupeAttempts(attempts)
 }
 
-func copyArgs(path string) []string {
-	if strings.TrimSpace(path) == "" {
-		return nil
+func linuxBrowserAttempts(target string) []commandAttempt {
+	return []commandAttempt{
+		{"firefox", []string{"--new-tab", target}},
+		{"firefox", []string{target}},
+		{"firefox-esr", []string{"--new-tab", target}},
+		{"firefox-esr", []string{target}},
+		{"librewolf", []string{"--new-tab", target}},
+		{"librewolf", []string{target}},
+		{"flatpak", []string{"run", "--filesystem=host", "org.mozilla.firefox", target}},
+		{"flatpak", []string{"run", "--filesystem=host:ro", "org.mozilla.firefox", target}},
+		{"flatpak", []string{"run", "--filesystem=host", "io.gitlab.librewolf-community", target}},
+		{"chromium", []string{target}},
+		{"chromium-browser", []string{target}},
+		{"google-chrome-stable", []string{target}},
+		{"google-chrome", []string{target}},
+		{"brave-browser", []string{target}},
+		{"opera", []string{target}},
+		{"vivaldi", []string{target}},
 	}
-	return []string{path}
+}
+
+func dedupeAttempts(attempts []commandAttempt) []commandAttempt {
+	seen := make(map[string]struct{}, len(attempts))
+	out := make([]commandAttempt, 0, len(attempts))
+	for _, a := range attempts {
+		if len(a.args) == 0 {
+			continue
+		}
+		key := a.name + "\x00" + strings.Join(a.args, "\x00")
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, a)
+	}
+	return out
 }
 
 type commandAttempt struct {
@@ -174,18 +200,4 @@ func startDetached(name string, args ...string) error {
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	}
 	return cmd.Start()
-}
-
-func isKDE() bool {
-	for _, v := range []string{
-		os.Getenv("XDG_CURRENT_DESKTOP"),
-		os.Getenv("XDG_SESSION_DESKTOP"),
-		os.Getenv("DESKTOP_SESSION"),
-	} {
-		lower := strings.ToLower(v)
-		if strings.Contains(lower, "kde") || strings.Contains(lower, "plasma") {
-			return true
-		}
-	}
-	return false
 }
