@@ -28,9 +28,10 @@ import (
 	"time"
 )
 
-const (
-	imageReportsDir  = "image_reports"
-	imageHistoryFile = "image_analysis_history.json"
+var (
+	imageReportsDir        = filepath.Join("reports", "image_reports")
+	imageHistoryFile       = filepath.Join(imageReportsDir, "image_analysis_history.json")
+	legacyImageHistoryFile = "image_analysis_history.json"
 )
 
 type FileHashes struct {
@@ -1276,7 +1277,7 @@ func openURLInDefaultApp(targetURL string) error {
 func saveImageHistoryRecord(record ImageAnalysisRecord) error {
 	history := ImageAnalysisHistory{}
 
-	raw, err := os.ReadFile(imageHistoryFile)
+	raw, err := readImageHistoryData()
 	if err == nil && len(raw) > 0 {
 		if err := json.Unmarshal(raw, &history); err != nil {
 			return err
@@ -1289,11 +1290,15 @@ func saveImageHistoryRecord(record ImageAnalysisRecord) error {
 		return err
 	}
 
+	if err := os.MkdirAll(filepath.Dir(imageHistoryFile), 0755); err != nil {
+		return err
+	}
+
 	return os.WriteFile(imageHistoryFile, data, 0644)
 }
 
 func loadImageHistory() (*ImageAnalysisHistory, error) {
-	data, err := os.ReadFile(imageHistoryFile)
+	data, err := readImageHistoryData()
 	if err != nil {
 		return nil, err
 	}
@@ -1304,6 +1309,19 @@ func loadImageHistory() (*ImageAnalysisHistory, error) {
 	}
 
 	return &history, nil
+}
+
+func readImageHistoryData() ([]byte, error) {
+	data, err := os.ReadFile(imageHistoryFile)
+	if err == nil {
+		return data, nil
+	}
+
+	if !os.IsNotExist(err) || imageHistoryFile == legacyImageHistoryFile {
+		return nil, err
+	}
+
+	return os.ReadFile(legacyImageHistoryFile)
 }
 
 func saveImageReport(imagePath, report string) (string, error) {
