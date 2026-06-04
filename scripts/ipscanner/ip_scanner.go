@@ -1430,10 +1430,10 @@ func IpScanner() {
 	fmt.Printf("%s[1] Range (e.g., 192.168.1.1-255)%s\n", utils.Green, utils.Reset)
 	fmt.Printf("%s[2] Single IP%s\n", utils.Green, utils.Reset)
 	fmt.Printf("%s[3] My public IP%s\n", utils.Green, utils.Reset)
-	fmt.Printf("%s[4] Complete Mode (safe full discovery + enrichment)%s\n", utils.Green, utils.Reset)
+	fmt.Printf("%s[4] CIDR / custom target expression%s\n", utils.Green, utils.Reset)
 	fmt.Printf("%s[5] Flags quick help%s\n", utils.Green, utils.Reset)
 	utils.PrintReturnOption("6")
-	fmt.Printf("\n%sTip: choose Flags quick help or type help in Advanced options.%s\n", utils.Yellow, utils.Reset)
+	fmt.Printf("\n%sTip: depois de escolher o alvo, escolhes perfil Fast/Medium/Full ou flags custom.%s\n", utils.Yellow, utils.Reset)
 	fmt.Printf("\n%sOption: %s", utils.Green, utils.Reset)
 
 	modeInput, _ := reader.ReadString('\n')
@@ -1486,7 +1486,7 @@ func IpScanner() {
 		fmt.Printf("\n%sDetected public IP: %s%s\n", utils.Yellow, publicIP, utils.Reset)
 		targets = []string{publicIP}
 	case "4":
-		mode = "complete"
+		mode = "custom-targets"
 		var ok bool
 		targets, ok = promptCompleteIPTargets(reader)
 		if !ok {
@@ -1505,11 +1505,10 @@ func IpScanner() {
 		return
 	}
 
-	var opts IPScannerOptions
-	if mode == "complete" {
-		opts = completeIPScannerOptions()
-	} else {
-		opts = promptIPScannerOptions(reader)
+	opts, ok := resolveIPScanOptions(reader)
+	if !ok {
+		utils.WaitForEnter(reader)
+		return
 	}
 	fmt.Printf("\n%sScanning %d target(s) with T%d, concurrency=%d, timeout=%s...%s\n\n",
 		utils.Yellow, len(targets), opts.TimingTemplate, opts.Concurrency, opts.Timeout, utils.Reset)
@@ -1547,7 +1546,7 @@ func promptCompleteIPTargets(reader *bufio.Reader) ([]string, bool) {
 		fmt.Printf("%sInvalid target expression: %v%s\n", utils.Red, err, utils.Reset)
 		return nil, false
 	}
-	fmt.Printf("%sComplete Mode selected %d target(s).%s\n", utils.Yellow, len(targets), utils.Reset)
+	fmt.Printf("%sComplete / custom targets: %d host(s).%s\n", utils.Yellow, len(targets), utils.Reset)
 	return targets, true
 }
 
@@ -1581,7 +1580,8 @@ func printIPScannerFlagHelp() {
 	fmt.Printf("  --no-rdns             Skip reverse DNS lookups.\n")
 	fmt.Printf("  --no-scripts          Skip passive built-in scripts.\n")
 	fmt.Printf("  --log-level debug     Log level: debug, info, warn, error.\n")
-	fmt.Printf("\n%sExample:%s -T4 --concurrency 256 --timeout 800ms --rate 800/s --discovery icmp,tcp,udp --output-format xml\n\n", utils.Yellow, utils.Reset)
+	fmt.Printf("\n%sExample:%s -T4 --concurrency 256 --timeout 800ms --rate 800/s --discovery icmp,tcp,udp --output-format xml\n", utils.Yellow, utils.Reset)
+	fmt.Printf("%sPerfis:%s Fast (default) · Medium (T4) · Full (T5, todos os probes) · Custom (flags acima)\n\n", utils.Blue, utils.Reset)
 }
 
 func parseIPTargetExpression(raw string, maxTargets int) ([]string, error) {

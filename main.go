@@ -41,7 +41,7 @@ func Menu() {
 	}
 	col2 := []string{
 		"[11] - Phone Information",
-		"[12] - ZPHISHER",
+		"[12] - Blub Blub",
 		"[13] - RAT",
 		"[14] - Ransomware",
 		"[15] - Keylogger",

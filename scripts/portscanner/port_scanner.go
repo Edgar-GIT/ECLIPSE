@@ -546,11 +546,11 @@ func PortScanner() {
 		fmt.Printf("%s[2] Scan specific IP + specific port%s\n", utils.Green, utils.Reset)
 		fmt.Printf("%s[3] Scan specific IP + all ports (1-65535)%s\n", utils.Green, utils.Reset)
 		fmt.Printf("%s[4] Fast scan (common important ports)%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[5] Advanced scan (Nmap-style safe flags)%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[6] Complete Mode (safe TCP full + UDP top ports)%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[5] Advanced scan (target + ports + profile/flags)%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[6] Complete scan (TCP 1-65535 + UDP top, dual pass)%s\n", utils.Green, utils.Reset)
 		fmt.Printf("%s[7] Flags quick help%s\n", utils.Green, utils.Reset)
 		utils.PrintReturnOption("8")
-		fmt.Printf("\n%sTip: choose Flags quick help or type help in Advanced options.%s\n", utils.Yellow, utils.Reset)
+		fmt.Printf("\n%sTip: após escolher o alvo, escolhes perfil Fast/Medium/Full ou flags custom.%s\n", utils.Yellow, utils.Reset)
 		fmt.Printf("\n%sOption: %s", utils.Green, utils.Reset)
 
 		option, _ := reader.ReadString('\n')
@@ -566,7 +566,12 @@ func PortScanner() {
 			}
 
 			fmt.Printf("\n%sDetected local IP: %s%s\n", utils.Yellow, localIP, utils.Reset)
-			results := runPortListScanWithOptions(ctx, localIP, expandPortRange(1, 65535), true, "local-ip-all", defaultPortScannerOptions())
+			opts, ok := resolvePortScanOptions(reader)
+			if !ok {
+				utils.WaitForEnter(reader)
+				return
+			}
+			results := runPortListScanWithOptions(ctx, localIP, expandPortRange(1, 65535), true, "local-ip-all", opts)
 			savePortResults(results)
 			utils.ClearTerminal()
 			displayPortResults(&results)
@@ -602,7 +607,12 @@ func PortScanner() {
 				return
 			}
 
-			results := runPortListScanWithOptions(ctx, targetIP, []int{port}, false, "single-port", defaultPortScannerOptions())
+			opts, ok := resolvePortScanOptions(reader)
+			if !ok {
+				utils.WaitForEnter(reader)
+				return
+			}
+			results := runPortListScanWithOptions(ctx, targetIP, []int{port}, false, "single-port", opts)
 			savePortResults(results)
 			utils.ClearTerminal()
 			displayPortResults(&results)
@@ -619,7 +629,12 @@ func PortScanner() {
 				return
 			}
 
-			results := runPortListScanWithOptions(ctx, targetIP, expandPortRange(1, 65535), true, "full-range", defaultPortScannerOptions())
+			opts, ok := resolvePortScanOptions(reader)
+			if !ok {
+				utils.WaitForEnter(reader)
+				return
+			}
+			results := runPortListScanWithOptions(ctx, targetIP, expandPortRange(1, 65535), true, "full-range", opts)
 			savePortResults(results)
 			utils.ClearTerminal()
 			displayPortResults(&results)
@@ -646,7 +661,12 @@ func PortScanner() {
 				return
 			}
 
-			results := runPortListScanWithOptions(ctx, targetIP, fastScanPorts, true, "fast-scan", defaultPortScannerOptions())
+			opts, ok := resolvePortScanOptions(reader)
+			if !ok {
+				utils.WaitForEnter(reader)
+				return
+			}
+			results := runPortListScanWithOptions(ctx, targetIP, fastScanPorts, true, "fast-scan", opts)
 			savePortResults(results)
 			utils.ClearTerminal()
 			displayPortResults(&results)
@@ -672,7 +692,7 @@ func PortScanner() {
 				utils.WaitForEnter(reader)
 				return
 			}
-			results := runCompletePortScan(ctx, targetIP)
+			results := runCompletePortScan(ctx, targetIP, reader)
 			savePortResults(results)
 			utils.ClearTerminal()
 			displayPortResults(&results)
@@ -705,18 +725,11 @@ func promptAdvancedPortScan(reader *bufio.Reader) (string, []int, PortScannerOpt
 	fmt.Printf("%sPorts (Enter = top 100, examples: 22,80,443 | 1-1024 | all): %s", utils.Green, utils.Reset)
 	portExpr, _ := reader.ReadString('\n')
 
-	fmt.Printf("\n%sAdvanced options (Enter = defaults). Examples:%s\n", utils.Blue, utils.Reset)
-	fmt.Printf("%s  -sT -sV -O -T4 --concurrency 512 --timeout 900ms --rate 1000/s --output-format grep%s\n", utils.Yellow, utils.Reset)
-	fmt.Printf("%s  -sU --top-ports 50 --exclude-ports 53,123 --script default,vuln%s\n", utils.Yellow, utils.Reset)
-	fmt.Printf("%s  Type help to show all common flags.%s\n", utils.Yellow, utils.Reset)
-	fmt.Printf("%sOptions: %s", utils.Green, utils.Reset)
-	rawOptions, _ := reader.ReadString('\n')
-	if strings.EqualFold(strings.TrimSpace(rawOptions), "help") {
-		printPortScannerFlagHelp()
-		return promptAdvancedPortScan(reader)
+	opts, ok := resolvePortScanOptions(reader)
+	if !ok {
+		return "", nil, PortScannerOptions{}, false
 	}
 
-	opts := parsePortScannerOptions(rawOptions)
 	ports := parsePortExpression(portExpr, opts)
 	if len(ports) == 0 {
 		fmt.Printf("%sNo valid ports selected.%s\n", utils.Red, utils.Reset)
@@ -762,14 +775,42 @@ func printPortScannerFlagHelp() {
 	fmt.Printf("  --script default,vuln Run passive built-in scripts.\n")
 	fmt.Printf("  --output-format all   Extra output: json, xml, grep, or all.\n")
 	fmt.Printf("  --log-level debug     Log level: debug, info, warn, error.\n")
-	fmt.Printf("\n%sExample:%s -sT -sV -O -T4 --concurrency 768 --timeout 800ms --rate 2000/s --output-format all\n\n", utils.Yellow, utils.Reset)
+	fmt.Printf("\n%sExample:%s -sT -sV -O -T4 --concurrency 768 --timeout 800ms --rate 2000/s --output-format all\n", utils.Yellow, utils.Reset)
+	fmt.Printf("%sPerfis:%s Fast (default) · Medium (T4 + OS) · Full (T5 + scripts) · Custom (flags acima)\n\n", utils.Blue, utils.Reset)
 }
 
-func runCompletePortScan(ctx context.Context, targetIP string) PortScanResults {
-	tcpOpts := completePortScannerOptions("tcp-connect")
-	udpOpts := completePortScannerOptions("udp")
+func runCompletePortScan(ctx context.Context, targetIP string, reader *bufio.Reader) PortScanResults {
+	profile, ok := utils.PromptScanProfile(reader)
+	if !ok {
+		return PortScanResults{TargetIP: targetIP}
+	}
+
+	var tcpOpts, udpOpts PortScannerOptions
+	if profile == "custom" {
+		base := promptPortScannerFlags(reader)
+		printPortProfileSummary(base, "custom")
+		tcpOpts = base
+		tcpOpts.ScanType = "tcp-connect"
+		tcpOpts.RequestedScan = "tcp-connect"
+		udpOpts = base
+		udpOpts.ScanType = "udp"
+		udpOpts.RequestedScan = "udp"
+		profile = "full"
+	} else {
+		tcpOpts = completePortScannerOptionsForProfile(profile, "tcp-connect")
+		udpOpts = completePortScannerOptionsForProfile(profile, "udp")
+		printPortProfileSummary(tcpOpts, profile)
+	}
+
 	tcpPorts := expandPortRange(1, 65535)
-	udpPorts := selectTopPorts(100)
+	udpTop := 100
+	switch profile {
+	case "fast":
+		udpTop = 25
+	case "medium":
+		udpTop = 50
+	}
+	udpPorts := selectTopPorts(udpTop)
 
 	type scanOut struct {
 		results PortScanResults
