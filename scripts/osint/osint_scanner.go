@@ -104,16 +104,6 @@ func pathOSINTResults() string {
 	return filepath.Join(workspaceRoot(), "target", "osint_results.json")
 }
 
-func pathOSINTReports() string {
-	return filepath.Join(workspaceRoot(), "target", "osint_reports")
-}
-
-func maigretOutputDir() string {
-	d := filepath.Join(pathOSINTReports(), "maigret")
-	_ = os.MkdirAll(d, 0755)
-	return d
-}
-
 func pathOSINTAPIKeys() string {
 	return filepath.Join(workspaceRoot(), "target", "osint_api_keys.json")
 }
@@ -625,7 +615,8 @@ func runSubdomainEnum(target string) {
 }
 
 func runMaigretLookup(target string) {
-	args := []string{"-a", "--html", target}
+	outDir := maigretOutputDir()
+	args := []string{"-a", "--html", "--folder", outDir, target}
 
 	if isToolInstalled("maigret") {
 		runOSINTCommand("maigret", target, "maigret", args)
@@ -1193,8 +1184,9 @@ func runOSINTCommand(toolName, target, cmdName string, args []string) {
 			defer os.RemoveAll(tmpDir)
 		}
 	}
-	if normalizeToolKey(toolName) == "maigret" {
-		toolWorkDir = maigretOutputDir()
+	switch normalizeToolKey(toolName) {
+	case "maigret", "theharvester", "theharvester.py", "spiderfoot":
+		toolWorkDir = toolOutputDir(toolName)
 	}
 
 	resolvedCmd, err := resolveToolPath(cmdName)
@@ -1278,6 +1270,15 @@ func executeOSINTCommand(toolName, target, cmdName string, cmd *exec.Cmd, start 
 		fmt.Printf("%sOutput saved to %s%s\n", utils.Yellow, outFile, utils.Reset)
 	}
 	printOSINTOutputPreview(toolName, processedOutput)
+
+	switch normalizeToolKey(toolName) {
+	case "maigret", "theharvester", "spiderfoot":
+		dest := toolOutputDir(toolName)
+		relocateStrayHTML(toolName, dest)
+		if moved := countHTMLInDir(dest); moved > 0 {
+			fmt.Printf("%sHTML/report files under:%s %s\n", utils.Green, utils.Reset, dest)
+		}
+	}
 }
 
 func runSetupCommand(cmd *exec.Cmd) ([]byte, error) {
@@ -3256,9 +3257,10 @@ func runLocalPythonModuleCommand(toolName, target, repoPath, module string, args
 	}
 
 	cmd := exec.Command(pythonPath, append([]string{"-m", module}, args...)...)
-	if normalizeToolKey(toolName) == "maigret" {
-		cmd.Dir = maigretOutputDir()
-	} else {
+	switch normalizeToolKey(toolName) {
+	case "maigret", "theharvester":
+		cmd.Dir = toolOutputDir(toolName)
+	default:
 		cmd.Dir = repoPath
 	}
 	executeOSINTCommand(toolName, target, module, cmd, time.Now())
@@ -3299,8 +3301,9 @@ func runTempRepoPythonModuleCommand(toolName, target, repoPath, module string, a
 	}
 
 	runCmd := exec.Command(pythonPath, append([]string{"-m", module}, args...)...)
-	if normalizeToolKey(toolName) == "maigret" {
-		runCmd.Dir = maigretOutputDir()
+	switch normalizeToolKey(toolName) {
+	case "maigret", "theharvester":
+		runCmd.Dir = toolOutputDir(toolName)
 	}
 	executeOSINTCommand(toolName, target, module, runCmd, time.Now())
 	return nil
@@ -3329,7 +3332,12 @@ func runLocalPythonScriptCommand(toolName, target, repoPath string, scriptCandid
 	}
 
 	cmd := exec.Command(pythonPath, append([]string{scriptPath}, args...)...)
-	cmd.Dir = repoPath
+	switch normalizeToolKey(toolName) {
+	case "spiderfoot":
+		cmd.Dir = spiderfootOutputDir()
+	default:
+		cmd.Dir = repoPath
+	}
 	executeOSINTCommand(toolName, target, filepath.Base(scriptPath), cmd, time.Now())
 	return true
 }

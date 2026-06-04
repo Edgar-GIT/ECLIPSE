@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 
+	"programa/scripts/reportsdir"
 	"programa/utils"
 )
 
@@ -23,6 +24,13 @@ func Launch() {
 		utils.WaitForEnter(reader)
 		return
 	}
+
+	if err := prepareAuthReports(); err != nil {
+		fmt.Printf("%s[!] Reports/auth: %v%s\n", utils.Red, err, utils.Reset)
+		utils.WaitForEnter(reader)
+		return
+	}
+	fmt.Printf("%s[*] Capturas guardadas em:%s %s\n\n", utils.Green, utils.Reset, reportsdir.ZphisherAuth())
 
 	bash, err := resolveBash()
 	if err != nil {
@@ -49,6 +57,14 @@ func Launch() {
 			fmt.Printf("\n%s[!] Execução falhou: %v%s\n", utils.Red, err, utils.Reset)
 		}
 	}
+
+	if sessionDir, err := snapshotSessionAfterRun(); err != nil {
+		fmt.Printf("%s[!] Não foi possível arquivar sessão: %v%s\n", utils.Yellow, err, utils.Reset)
+	} else if sessionDir != "" {
+		fmt.Printf("%s[✓] Sessão arquivada:%s %s\n", utils.Green, utils.Reset, sessionDir)
+	}
+	fmt.Printf("%s[✓] Capturas atuais:%s %s\n", utils.Green, utils.Reset, reportsdir.ZphisherAuth())
+	fmt.Printf("%s    (History → Zphisher reports para rever)%s\n", utils.Yellow, utils.Reset)
 
 	fmt.Printf("\n%sPress Enter to voltar ao menu...%s", utils.Green, utils.Reset)
 	reader.ReadString('\n')
