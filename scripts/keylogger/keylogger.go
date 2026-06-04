@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"programa/utils"
@@ -82,8 +83,8 @@ func eclipseModuleRoot() string {
 }
 
 func ldflagX(pkgVar, val string) string {
-	val = strings.ReplaceAll(strings.ReplaceAll(val, "\n", " "), `"`, `'`)
-	return "-X=" + pkgVar + "=" + val
+	val = strings.ReplaceAll(strings.ReplaceAll(val, "\r", " "), "\n", " ")
+	return "-X " + strconv.Quote(pkgVar+"="+val)
 }
 
 func suggestedKeyloggerFilename(goos string) string {
