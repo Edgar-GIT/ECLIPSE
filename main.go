@@ -18,6 +18,7 @@ import (
 	"programa/scripts/pcutilities"
 	"programa/scripts/portscanner"
 	"programa/scripts/ransomware"
+	"programa/scripts/zphisher"
 	"programa/utils"
 )
 
@@ -211,9 +212,7 @@ func main() {
 			fmt.Printf("\n%sPress Enter to continue...%s", utils.Green, utils.Reset)
 			reader.ReadString('\n')
 		case "12":
-			fmt.Printf("%sInvalid option!%s\n", utils.Yellow, utils.Reset)
-			fmt.Printf("\n%sPress Enter to continue...%s", utils.Green, utils.Reset)
-			reader.ReadString('\n')
+			zphisher.Launch()
 		case "13":
 			fmt.Printf("%sInvalid option!%s\n", utils.Yellow, utils.Reset)
 			fmt.Printf("\n%sPress Enter to continue...%s", utils.Green, utils.Reset)
