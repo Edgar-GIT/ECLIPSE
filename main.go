@@ -42,15 +42,15 @@ func Menu() {
 	}
 	col2 := []string{
 		"[11] - Phone Information",
-		"[12] - Blub Blub",
+		"[12] - Phishing",
 		"[13] - RAT",
 		"[14] - Ransomware",
 		"[15] - Keylogger",
 		"[16] - Garbage Injector",
-		"[17] - Live Camera Hijack",
+		"[17] - Camera Hijacker",
 		"[18] - Evil QR",
 		"[19] - Web Inspection",
-		"[20] - Malware Obfuscator",
+		"[20] - Malware Obfuscators",
 	}
 
 	boxWidth := 35
