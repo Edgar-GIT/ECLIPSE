@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"programa/scripts/car"
 	"programa/scripts/cookies"
 	"programa/scripts/dos"
 	"programa/scripts/garbageinjector"
@@ -127,7 +128,8 @@ func HistoryMenu() {
 		fmt.Printf("%s[4]  - View Image Analysis History%s\n", utils.Green, utils.Reset)
 		fmt.Printf("%s[5]  - PC system reports (saved exports)%s\n", utils.Green, utils.Reset)
 		fmt.Printf("%s[6]  - Zphisher captures (reports/zphisher)%s\n", utils.Green, utils.Reset)
-		utils.PrintReturnOption("7")
+		fmt.Printf("%s[7]  - Car Information History%s\n", utils.Green, utils.Reset)
+		utils.PrintReturnOption("8")
 
 		fmt.Printf("\n%sOption: %s", utils.Green, utils.Reset)
 		input, readErr := reader.ReadString('\n')
@@ -151,6 +153,8 @@ func HistoryMenu() {
 		case "6":
 			zphisher.ViewZphisherReports()
 		case "7":
+			car.ViewCarHistory()
+		case "8":
 			return
 		default:
 			fmt.Printf("%sInvalid option!%s\n", utils.Yellow, utils.Reset)
@@ -207,9 +211,7 @@ func main() {
 		case "9":
 			cookies.CookieToolMenu()
 		case "10":
-			fmt.Printf("%sInvalid option!%s\n", utils.Yellow, utils.Reset)
-			fmt.Printf("\n%sPress Enter to continue...%s", utils.Green, utils.Reset)
-			reader.ReadString('\n')
+			car.CarInformationMenu()
 		case "11":
 			fmt.Printf("%sInvalid option!%s\n", utils.Yellow, utils.Reset)
 			fmt.Printf("\n%sPress Enter to continue...%s", utils.Green, utils.Reset)
