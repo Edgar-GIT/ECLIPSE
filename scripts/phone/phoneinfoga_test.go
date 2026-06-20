@@ -1,6 +1,11 @@
 package phone
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 func TestNormalizePhoneNumber(t *testing.T) {
 	got := normalizePhoneNumber(" +(351) 912-345-678 ")
@@ -87,5 +92,58 @@ func TestRecordStatusWithSkippedScanners(t *testing.T) {
 	rec.Scanners = []phoneInfoGaScannerRun{{Name: "ovh", Status: "skipped"}}
 	if got := recordStatus(rec); got != "SKIPPED" {
 		t.Fatalf("recordStatus() = %q, want SKIPPED", got)
+	}
+}
+
+func TestLoadPhoneInfoGaCredentialsUsesTextFileOnly(t *testing.T) {
+	t.Setenv("ECLIPSE_ROOT", t.TempDir())
+	t.Setenv("NUMVERIFY_API_KEY", "from-env")
+	t.Setenv("GOOGLE_API_KEY", "from-env")
+
+	credentials, exists, err := loadPhoneInfoGaCredentials()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exists {
+		t.Fatal("credentials file should not exist")
+	}
+	if credentials["NUMVERIFY_API_KEY"] != "" || credentials["GOOGLE_API_KEY"] != "" {
+		t.Fatalf("credentials should ignore environment values: %#v", credentials)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(phoneInfoGaCredentialsFile()), 0755); err != nil {
+		t.Fatal(err)
+	}
+	data := "NUMVERIFY_API_KEY=from-file\nGOOGLE_API_KEY=\nGOOGLECSE_CX=cx-value\n"
+	if err := os.WriteFile(phoneInfoGaCredentialsFile(), []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	credentials, exists, err = loadPhoneInfoGaCredentials()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !exists {
+		t.Fatal("credentials file should exist")
+	}
+	if credentials["NUMVERIFY_API_KEY"] != "from-file" {
+		t.Fatalf("NUMVERIFY_API_KEY = %q, want from-file", credentials["NUMVERIFY_API_KEY"])
+	}
+	if credentials["GOOGLE_API_KEY"] != "" {
+		t.Fatalf("GOOGLE_API_KEY = %q, want empty from file", credentials["GOOGLE_API_KEY"])
+	}
+	if credentials["GOOGLECSE_CX"] != "cx-value" {
+		t.Fatalf("GOOGLECSE_CX = %q, want cx-value", credentials["GOOGLECSE_CX"])
+	}
+}
+
+func TestNormalizeScannerError(t *testing.T) {
+	googleMessage := "HTTP 500: googleapi: Error 403: Custom Search API has not been used in project before or it is disabled, SERVICE_DISABLED"
+	if got := normalizeScannerError("googlecse", googleMessage); !strings.Contains(got, "Enable customsearch.googleapis.com") {
+		t.Fatalf("googlecse error = %q", got)
+	}
+
+	if got := normalizeScannerError("numverify", "HTTP 500: Invalid authentication credentials"); !strings.Contains(got, "Invalid NUMVERIFY_API_KEY") {
+		t.Fatalf("numverify error = %q", got)
 	}
 }

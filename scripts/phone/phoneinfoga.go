@@ -592,12 +592,12 @@ func runScanner(ctx context.Context, client *http.Client, baseURL, number string
 	rec.StatusCode = statusCode
 	if err != nil {
 		rec.Status = "error"
-		rec.Error = err.Error()
+		rec.Error = normalizeScannerError(scanner.Name, err.Error())
 		return rec
 	}
 	if strings.TrimSpace(out.Error) != "" {
 		rec.Status = "error"
-		rec.Error = strings.TrimSpace(out.Error)
+		rec.Error = normalizeScannerError(scanner.Name, out.Error)
 		return rec
 	}
 	rec.Result = out.Result
@@ -644,6 +644,30 @@ func skippedScanner(scanner phoneInfoGaScanner, reason string) phoneInfoGaScanne
 		Status:      "skipped",
 		Error:       reason,
 	}
+}
+
+func normalizeScannerError(scanner, message string) string {
+	message = strings.TrimSpace(message)
+	scanner = strings.ToLower(strings.TrimSpace(scanner))
+	lower := strings.ToLower(message)
+
+	if scanner == "googlecse" {
+		if strings.Contains(lower, "service_disabled") || strings.Contains(lower, "custom search api has not been used") || strings.Contains(lower, "customsearch.googleapis.com") {
+			return "Custom Search API is disabled for this Google Cloud project. Enable customsearch.googleapis.com in Google Cloud Console, wait a few minutes, then rerun."
+		}
+		if strings.Contains(lower, "could not find default credentials") || strings.Contains(lower, "default credentials") {
+			return "Invalid GOOGLE_API_KEY or GOOGLECSE_CX in " + phoneInfoGaCredentialsFile()
+		}
+	}
+
+	if scanner == "numverify" && (strings.Contains(lower, "invalid authentication credentials") || strings.Contains(lower, "no api key")) {
+		return "Invalid NUMVERIFY_API_KEY in " + phoneInfoGaCredentialsFile()
+	}
+
+	if message == "" {
+		return "scanner failed without details"
+	}
+	return message
 }
 
 func isOVHSupportedCountryCode(code int) bool {
@@ -862,6 +886,7 @@ func saveRecord(rec *phoneInfoGaRecord) error {
 		return err
 	}
 	history.Records = append(history.Records, *rec)
+	history = mergeHistoryRecords(history)
 	return saveHistory(history)
 }
 
@@ -869,13 +894,39 @@ func loadHistory() (phoneInfoGaHistory, error) {
 	raw, err := os.ReadFile(historyFile())
 	if err != nil {
 		if os.IsNotExist(err) {
-			return phoneInfoGaHistory{}, nil
+			history, rebuildErr := loadHistoryFromResultFiles()
+			if rebuildErr != nil {
+				return phoneInfoGaHistory{}, rebuildErr
+			}
+			if len(history.Records) > 0 {
+				_ = saveHistory(history)
+			}
+			return history, nil
 		}
 		return phoneInfoGaHistory{}, err
 	}
 	var history phoneInfoGaHistory
 	if err := json.Unmarshal(raw, &history); err != nil {
+		rebuilt, rebuildErr := loadHistoryFromResultFiles()
+		if rebuildErr != nil {
+			return phoneInfoGaHistory{}, fmt.Errorf("history file is invalid and rebuild failed: %w", rebuildErr)
+		}
+		if len(rebuilt.Records) == 0 {
+			return phoneInfoGaHistory{}, err
+		}
+		_ = saveHistory(rebuilt)
+		return rebuilt, nil
+	}
+
+	fromResults, err := loadHistoryFromResultFiles()
+	if err != nil {
 		return phoneInfoGaHistory{}, err
+	}
+	before := len(history.Records)
+	history.Records = append(history.Records, fromResults.Records...)
+	history = mergeHistoryRecords(history)
+	if len(history.Records) != before {
+		_ = saveHistory(history)
 	}
 	return history, nil
 }
@@ -891,8 +942,73 @@ func saveHistory(history phoneInfoGaHistory) error {
 	return os.WriteFile(historyFile(), pretty, 0644)
 }
 
+func loadHistoryFromResultFiles() (phoneInfoGaHistory, error) {
+	entries, err := os.ReadDir(resultsDir())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return phoneInfoGaHistory{}, nil
+		}
+		return phoneInfoGaHistory{}, err
+	}
+
+	history := phoneInfoGaHistory{}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".json") {
+			continue
+		}
+		path := filepath.Join(resultsDir(), entry.Name())
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var rec phoneInfoGaRecord
+		if err := json.Unmarshal(raw, &rec); err != nil {
+			continue
+		}
+		if rec.ID == "" {
+			rec.ID = strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
+		}
+		if rec.ResultFile == "" {
+			rec.ResultFile = path
+		}
+		if rec.CreatedAt.IsZero() {
+			if info, err := entry.Info(); err == nil {
+				rec.CreatedAt = info.ModTime()
+			}
+		}
+		if rec.ID == "" || rec.Number == "" || rec.CreatedAt.IsZero() {
+			continue
+		}
+		history.Records = append(history.Records, rec)
+	}
+	return mergeHistoryRecords(history), nil
+}
+
+func mergeHistoryRecords(history phoneInfoGaHistory) phoneInfoGaHistory {
+	records := make([]phoneInfoGaRecord, 0, len(history.Records))
+	seen := make(map[string]struct{}, len(history.Records))
+	for _, rec := range history.Records {
+		key := rec.ID
+		if key == "" && rec.ResultFile != "" {
+			key = rec.ResultFile
+		}
+		if key == "" {
+			key = rec.CreatedAt.Format(time.RFC3339Nano) + "|" + rec.Number
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		records = append(records, rec)
+	}
+	sort.SliceStable(records, func(i, j int) bool {
+		return records[i].CreatedAt.Before(records[j].CreatedAt)
+	})
+	return phoneInfoGaHistory{Records: records}
+}
+
 func deleteHistory(reader *bufio.Reader) {
-	fmt.Printf("%sDelete phone lookup history? [y/N]: %s", utils.Yellow, utils.Reset)
+	fmt.Printf("%sDelete phone lookup history and saved result files? [y/N]: %s", utils.Yellow, utils.Reset)
 	line, _ := reader.ReadString('\n')
 	line = strings.TrimSpace(strings.ToLower(line))
 	if line != "y" && line != "yes" && line != "s" && line != "sim" {
@@ -900,17 +1016,32 @@ func deleteHistory(reader *bufio.Reader) {
 	}
 	if err := os.Remove(historyFile()); err != nil && !os.IsNotExist(err) {
 		fmt.Printf("%s[!] %v%s\n", utils.Red, err, utils.Reset)
-	} else {
-		fmt.Printf("%sHistory deleted.%s\n", utils.Green, utils.Reset)
+		utils.WaitForEnter(reader)
+		return
 	}
+	if entries, err := os.ReadDir(resultsDir()); err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".json") {
+				continue
+			}
+			_ = os.Remove(filepath.Join(resultsDir(), entry.Name()))
+		}
+	}
+	fmt.Printf("%sHistory deleted.%s\n", utils.Green, utils.Reset)
 	utils.WaitForEnter(reader)
 }
 
 func ensurePhoneInfoGaCredentials(reader *bufio.Reader) phoneInfoGaCredentials {
 	credentials, exists, err := loadPhoneInfoGaCredentials()
 	if err != nil {
-		fmt.Printf("%s[!] Failed to load PhoneInfoga keys: %v%s\n", utils.Yellow, err, utils.Reset)
-		return credentials
+		if os.IsPermission(err) {
+			fmt.Printf("%s[!] PhoneInfoga key file is not readable and will be recreated: %s%s\n", utils.Yellow, phoneInfoGaCredentialsFile(), utils.Reset)
+			credentials = emptyPhoneInfoGaCredentials()
+			exists = false
+		} else {
+			fmt.Printf("%s[!] Failed to load PhoneInfoga keys: %v%s\n", utils.Yellow, err, utils.Reset)
+			return credentials
+		}
 	}
 	if exists {
 		if missing := missingPhoneInfoGaCredentialGroups(credentials); len(missing) > 0 {
@@ -944,10 +1075,7 @@ func promptCredential(reader *bufio.Reader, key string) string {
 }
 
 func loadPhoneInfoGaCredentials() (phoneInfoGaCredentials, bool, error) {
-	credentials := phoneInfoGaCredentials{}
-	for _, key := range phoneInfoGaCredentialKeys() {
-		credentials[key] = strings.TrimSpace(os.Getenv(key))
-	}
+	credentials := emptyPhoneInfoGaCredentials()
 
 	raw, err := os.ReadFile(phoneInfoGaCredentialsFile())
 	if err != nil {
@@ -971,11 +1099,17 @@ func loadPhoneInfoGaCredentials() (phoneInfoGaCredentials, bool, error) {
 			continue
 		}
 		value = strings.Trim(strings.TrimSpace(value), `"'`)
-		if value != "" {
-			credentials[key] = value
-		}
+		credentials[key] = value
 	}
 	return credentials, true, nil
+}
+
+func emptyPhoneInfoGaCredentials() phoneInfoGaCredentials {
+	credentials := phoneInfoGaCredentials{}
+	for _, key := range phoneInfoGaCredentialKeys() {
+		credentials[key] = ""
+	}
+	return credentials
 }
 
 func savePhoneInfoGaCredentials(credentials phoneInfoGaCredentials) error {
@@ -987,7 +1121,16 @@ func savePhoneInfoGaCredentials(credentials phoneInfoGaCredentials) error {
 	b.WriteString("GOOGLE_API_KEY=" + credentials["GOOGLE_API_KEY"] + "\n")
 	b.WriteString("GOOGLECSE_CX=" + credentials["GOOGLECSE_CX"] + "\n")
 	b.WriteString("GOOGLECSE_MAX_RESULTS=" + credentials["GOOGLECSE_MAX_RESULTS"] + "\n")
-	return os.WriteFile(phoneInfoGaCredentialsFile(), []byte(b.String()), 0600)
+	path := phoneInfoGaCredentialsFile()
+	if err := os.WriteFile(path, []byte(b.String()), 0600); err != nil {
+		if os.IsPermission(err) {
+			if removeErr := os.Remove(path); removeErr == nil {
+				return os.WriteFile(path, []byte(b.String()), 0600)
+			}
+		}
+		return err
+	}
+	return nil
 }
 
 func phoneInfoGaCredentialKeys() []string {

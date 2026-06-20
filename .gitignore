@@ -28,5 +28,6 @@ net_logs/
 
 # Third-party tools
 osint_tools/
+exec_tools/
 .aider*
 .codex
