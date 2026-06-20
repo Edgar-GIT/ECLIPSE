@@ -792,6 +792,10 @@ func printScannerRuns(scanners []phoneInfoGaScannerRun) {
 			if summary != "" {
 				fmt.Printf("    %s\n", summary)
 			}
+			details := scannerResultDetails(scanner.Name, scanner.Result)
+			for _, detail := range details {
+				fmt.Printf("    - %s\n", detail)
+			}
 		}
 	}
 }
@@ -1171,6 +1175,115 @@ func scannerResultSummary(result any) string {
 	}
 }
 
+func scannerResultDetails(scanner string, result any) []string {
+	data, ok := result.(map[string]any)
+	if !ok {
+		return nil
+	}
+
+	switch strings.ToLower(strings.TrimSpace(scanner)) {
+	case "googlesearch":
+		return googlesearchDetails(data, 8)
+	case "googlecse":
+		return googleCSEDetails(data, 8)
+	default:
+		return mapDetails(data, 8)
+	}
+}
+
+func googlesearchDetails(data map[string]any, limit int) []string {
+	keys := make([]string, 0, len(data))
+	for key, value := range data {
+		items, ok := value.([]any)
+		if !ok || len(items) == 0 {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	var details []string
+	for _, key := range keys {
+		items, _ := data[key].([]any)
+		for _, item := range items {
+			entry, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			dork := stringValue(entry["dork"])
+			link := stringValue(entry["url"])
+			if link == "" {
+				link = stringValue(entry["link"])
+			}
+			if dork == "" && link == "" {
+				continue
+			}
+			if dork != "" && link != "" {
+				details = append(details, fmt.Sprintf("%s: %s -> %s", fieldLabel(key), dork, link))
+			} else {
+				details = append(details, fmt.Sprintf("%s: %s%s", fieldLabel(key), dork, link))
+			}
+			if len(details) == limit {
+				return details
+			}
+		}
+	}
+	if len(details) == limit {
+		details = append(details, "Open JSON from history to view every generated search link")
+	}
+	return details
+}
+
+func googleCSEDetails(data map[string]any, limit int) []string {
+	for _, key := range []string{"items", "results"} {
+		items, ok := data[key].([]any)
+		if !ok || len(items) == 0 {
+			continue
+		}
+		details := make([]string, 0, limit)
+		for _, item := range items {
+			entry, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			title := firstStringValue(entry, "title", "htmlTitle", "name")
+			link := firstStringValue(entry, "link", "url")
+			snippet := firstStringValue(entry, "snippet", "htmlSnippet")
+			line := strings.TrimSpace(strings.Join(nonEmptyStrings(title, link, snippet), " | "))
+			if line == "" {
+				continue
+			}
+			details = append(details, line)
+			if len(details) == limit {
+				break
+			}
+		}
+		return details
+	}
+	return mapDetails(data, limit)
+}
+
+func mapDetails(data map[string]any, limit int) []string {
+	keys := make([]string, 0, len(data))
+	for key := range data {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	details := make([]string, 0, limit)
+	for _, key := range keys {
+		value := compactValue(data[key])
+		if value == "N/A" || strings.HasSuffix(value, " item(s)") || strings.HasSuffix(value, " field(s)") {
+			continue
+		}
+		details = append(details, fmt.Sprintf("%s=%s", fieldLabel(key), value))
+		if len(details) == limit {
+			break
+		}
+	}
+	return details
+}
+
 func recordStatus(rec phoneInfoGaRecord) string {
 	if rec.Error != "" {
 		return "ERROR"
@@ -1245,6 +1358,34 @@ func compactValue(value any) string {
 		}
 		return string(raw)
 	}
+}
+
+func firstStringValue(data map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value := stringValue(data[key]); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func stringValue(value any) string {
+	v, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(v)
+}
+
+func nonEmptyStrings(values ...string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func apiErrorMessage(raw []byte) string {

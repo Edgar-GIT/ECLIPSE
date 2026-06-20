@@ -147,3 +147,22 @@ func TestNormalizeScannerError(t *testing.T) {
 		t.Fatalf("numverify error = %q", got)
 	}
 }
+
+func TestScannerResultDetailsForGoogleSearch(t *testing.T) {
+	result := map[string]any{
+		"general": []any{
+			map[string]any{
+				"dork": "intext:\"351928052835\"",
+				"url":  "https://www.google.com/search?q=351928052835",
+			},
+		},
+	}
+
+	details := scannerResultDetails("googlesearch", result)
+	if len(details) != 1 {
+		t.Fatalf("details len = %d, want 1", len(details))
+	}
+	if !strings.Contains(details[0], "GENERAL") || !strings.Contains(details[0], "https://www.google.com/search") {
+		t.Fatalf("details[0] = %q", details[0])
+	}
+}
