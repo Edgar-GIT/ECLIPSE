@@ -17,6 +17,7 @@ import (
 	"programa/scripts/nethunter"
 	"programa/scripts/osint"
 	"programa/scripts/pcutilities"
+	"programa/scripts/phone"
 	"programa/scripts/portscanner"
 	"programa/scripts/ransomware"
 	"programa/scripts/zphisher"
@@ -129,7 +130,8 @@ func HistoryMenu() {
 		fmt.Printf("%s[5]  - PC system reports (saved exports)%s\n", utils.Green, utils.Reset)
 		fmt.Printf("%s[6]  - Zphisher captures (reports/zphisher)%s\n", utils.Green, utils.Reset)
 		fmt.Printf("%s[7]  - Car Information History%s\n", utils.Green, utils.Reset)
-		utils.PrintReturnOption("8")
+		fmt.Printf("%s[8]  - Phone Information History%s\n", utils.Green, utils.Reset)
+		utils.PrintReturnOption("9")
 
 		fmt.Printf("\n%sOption: %s", utils.Green, utils.Reset)
 		input, readErr := reader.ReadString('\n')
@@ -155,6 +157,8 @@ func HistoryMenu() {
 		case "7":
 			car.ViewCarHistory()
 		case "8":
+			phone.ViewPhoneHistory()
+		case "9":
 			return
 		default:
 			fmt.Printf("%sInvalid option!%s\n", utils.Yellow, utils.Reset)
@@ -213,9 +217,7 @@ func main() {
 		case "10":
 			car.CarInformationMenu()
 		case "11":
-			fmt.Printf("%sInvalid option!%s\n", utils.Yellow, utils.Reset)
-			fmt.Printf("\n%sPress Enter to continue...%s", utils.Green, utils.Reset)
-			reader.ReadString('\n')
+			phone.PhoneInformationMenu()
 		case "12":
 			zphisher.Launch()
 		case "13":
