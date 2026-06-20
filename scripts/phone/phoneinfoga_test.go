@@ -143,6 +143,11 @@ func TestNormalizeScannerError(t *testing.T) {
 		t.Fatalf("googlecse error = %q", got)
 	}
 
+	googleNoAccess := "HTTP 500: googleapi: Error 403: This project does not have the access to Custom Search JSON API., forbidden"
+	if got := normalizeScannerError("googlecse", googleNoAccess); !strings.Contains(got, "closed this API to new customers") {
+		t.Fatalf("googlecse no access error = %q", got)
+	}
+
 	if got := normalizeScannerError("numverify", "HTTP 500: Invalid authentication credentials"); !strings.Contains(got, "Invalid NUMVERIFY_API_KEY") {
 		t.Fatalf("numverify error = %q", got)
 	}
@@ -164,5 +169,50 @@ func TestScannerResultDetailsForGoogleSearch(t *testing.T) {
 	}
 	if !strings.Contains(details[0], "GENERAL") || !strings.Contains(details[0], "https://www.google.com/search") {
 		t.Fatalf("details[0] = %q", details[0])
+	}
+}
+
+func TestLookupSummaryRows(t *testing.T) {
+	rec := phoneInfoGaRecord{
+		NumberInfo: &phoneInfoGaNumber{
+			E164:    "+351928052835",
+			Country: "PT",
+			Valid:   true,
+		},
+		Scanners: []phoneInfoGaScannerRun{
+			{
+				Name:   "numverify",
+				Status: "ok",
+				Result: map[string]any{
+					"carrier":      "NOWO Communications SA",
+					"country_code": "PT",
+					"country_name": "Portugal",
+					"line_type":    "mobile",
+				},
+			},
+			{
+				Name:   "googlecse",
+				Status: "error",
+				Error:  "Custom Search API is disabled",
+			},
+			{
+				Name:   "googlesearch",
+				Status: "ok",
+				Result: map[string]any{
+					"general": []any{map[string]any{"url": "https://www.google.com/search?q=test"}},
+				},
+			},
+		},
+	}
+
+	rows := lookupSummaryRows(rec)
+	joined := ""
+	for _, row := range rows {
+		joined += row[0] + "=" + row[1] + "\n"
+	}
+	for _, want := range []string{"Carrier=NOWO Communications SA", "Line Type=mobile", "Web Results=Unavailable", "Manual Searches=1 generated"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("summary rows missing %q in:\n%s", want, joined)
+		}
 	}
 }

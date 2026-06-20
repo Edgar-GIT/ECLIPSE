@@ -652,6 +652,9 @@ func normalizeScannerError(scanner, message string) string {
 	lower := strings.ToLower(message)
 
 	if scanner == "googlecse" {
+		if strings.Contains(lower, "does not have the access to custom search json api") || strings.Contains(lower, "custom search json api") && strings.Contains(lower, "forbidden") {
+			return "This Google Cloud project has no access to Custom Search JSON API. Google has closed this API to new customers; use an older project with existing access or disable googlecse."
+		}
 		if strings.Contains(lower, "service_disabled") || strings.Contains(lower, "custom search api has not been used") || strings.Contains(lower, "customsearch.googleapis.com") {
 			return "Custom Search API is disabled for this Google Cloud project. Enable customsearch.googleapis.com in Google Cloud Console, wait a few minutes, then rerun."
 		}
@@ -744,12 +747,104 @@ func displayRecord(rec phoneInfoGaRecord) {
 		fmt.Printf("\n%sStatus:%s %s\n", utils.Red, utils.Reset, rec.Error)
 	}
 
+	if rec.NumberInfo != nil || len(rec.Scanners) > 0 {
+		printLookupSummary(rec)
+	}
 	if rec.NumberInfo != nil {
 		printNumberInfo(*rec.NumberInfo)
 	}
 	if len(rec.Scanners) > 0 {
 		printScannerRuns(rec.Scanners)
 	}
+}
+
+func printLookupSummary(rec phoneInfoGaRecord) {
+	rows := lookupSummaryRows(rec)
+	if len(rows) == 0 {
+		return
+	}
+	fmt.Printf("\n%sSUMMARY%s\n", utils.Blue, utils.Reset)
+	printRows(rows)
+}
+
+func lookupSummaryRows(rec phoneInfoGaRecord) [][2]string {
+	rows := [][2]string{
+		{"Lookup Status", recordStatus(rec)},
+	}
+
+	if rec.NumberInfo != nil {
+		rows = append(rows,
+			[2]string{"Number", fieldOrNA(rec.NumberInfo.E164)},
+			[2]string{"Country", summaryCountry(rec)},
+		)
+	}
+
+	if carrier := scannerField(rec.Scanners, "numverify", "carrier"); carrier != "" {
+		rows = append(rows, [2]string{"Carrier", carrier})
+	} else if rec.NumberInfo != nil {
+		rows = append(rows, [2]string{"Carrier", fieldOrNA(rec.NumberInfo.Carrier)})
+	}
+	if lineType := scannerField(rec.Scanners, "numverify", "line_type"); lineType != "" {
+		rows = append(rows, [2]string{"Line Type", lineType})
+	}
+	if location := scannerField(rec.Scanners, "numverify", "location"); location != "" {
+		rows = append(rows, [2]string{"Location", location})
+	}
+
+	rows = append(rows,
+		[2]string{"Web Results", webResultsStatus(rec.Scanners)},
+		[2]string{"Manual Searches", manualSearchStatus(rec.Scanners)},
+	)
+	return rows
+}
+
+func summaryCountry(rec phoneInfoGaRecord) string {
+	name := scannerField(rec.Scanners, "numverify", "country_name")
+	code := scannerField(rec.Scanners, "numverify", "country_code")
+	if name != "" && code != "" {
+		return fmt.Sprintf("%s (%s)", name, code)
+	}
+	if name != "" {
+		return name
+	}
+	if rec.NumberInfo != nil {
+		return fieldOrNA(rec.NumberInfo.Country)
+	}
+	return "N/A"
+}
+
+func webResultsStatus(scanners []phoneInfoGaScannerRun) string {
+	scanner, ok := scannerRunByName(scanners, "googlecse")
+	if !ok {
+		return "Not run"
+	}
+	switch scanner.Status {
+	case "ok":
+		count := countGoogleCSEItems(scanner.Result)
+		if count == 0 {
+			return "No live web results returned"
+		}
+		return fmt.Sprintf("%d live web result(s)", count)
+	case "skipped":
+		return "Skipped: " + scanner.Error
+	default:
+		if scanner.Error == "" {
+			return "Unavailable"
+		}
+		return "Unavailable: " + scanner.Error
+	}
+}
+
+func manualSearchStatus(scanners []phoneInfoGaScannerRun) string {
+	scanner, ok := scannerRunByName(scanners, "googlesearch")
+	if !ok || scanner.Status != "ok" {
+		return "Not available"
+	}
+	count := countGeneratedSearchLinks(scanner.Result)
+	if count == 0 {
+		return "No generated links"
+	}
+	return fmt.Sprintf("%d generated Google search link(s)", count)
 }
 
 func printNumberInfo(info phoneInfoGaNumber) {
@@ -788,7 +883,7 @@ func printScannerRuns(scanners []phoneInfoGaScannerRun) {
 		}
 		fmt.Println()
 		if scanner.Result != nil && scanner.Error == "" {
-			summary := scannerResultSummary(scanner.Result)
+			summary := scannerRunSummary(scanner.Name, scanner.Result)
 			if summary != "" {
 				fmt.Printf("    %s\n", summary)
 			}
@@ -1152,6 +1247,25 @@ func missingPhoneInfoGaCredentialGroups(credentials phoneInfoGaCredentials) []st
 	return missing
 }
 
+func scannerRunSummary(scanner string, result any) string {
+	switch strings.ToLower(strings.TrimSpace(scanner)) {
+	case "googlesearch":
+		count := countGeneratedSearchLinks(result)
+		if count == 0 {
+			return "Generated manual Google searches; no live web lookup was performed"
+		}
+		return fmt.Sprintf("%d generated manual Google search link(s); these are leads, not confirmed matches", count)
+	case "googlecse":
+		count := countGoogleCSEItems(result)
+		if count == 0 {
+			return "No live web results returned by Google CSE"
+		}
+		return fmt.Sprintf("%d live web result(s) returned by Google CSE", count)
+	default:
+		return scannerResultSummary(result)
+	}
+}
+
 func scannerResultSummary(result any) string {
 	switch v := result.(type) {
 	case nil:
@@ -1173,6 +1287,33 @@ func scannerResultSummary(result any) string {
 		}
 		return string(raw)
 	}
+}
+
+func scannerRunByName(scanners []phoneInfoGaScannerRun, name string) (phoneInfoGaScannerRun, bool) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	for _, scanner := range scanners {
+		if strings.ToLower(strings.TrimSpace(scanner.Name)) == name {
+			return scanner, true
+		}
+	}
+	return phoneInfoGaScannerRun{}, false
+}
+
+func scannerResultMap(scanners []phoneInfoGaScannerRun, name string) (map[string]any, bool) {
+	scanner, ok := scannerRunByName(scanners, name)
+	if !ok || scanner.Status != "ok" || scanner.Result == nil {
+		return nil, false
+	}
+	data, ok := scanner.Result.(map[string]any)
+	return data, ok
+}
+
+func scannerField(scanners []phoneInfoGaScannerRun, name, field string) string {
+	data, ok := scannerResultMap(scanners, name)
+	if !ok {
+		return ""
+	}
+	return stringValue(data[field])
 }
 
 func scannerResultDetails(scanner string, result any) []string {
@@ -1232,6 +1373,35 @@ func googlesearchDetails(data map[string]any, limit int) []string {
 		details = append(details, "Open JSON from history to view every generated search link")
 	}
 	return details
+}
+
+func countGeneratedSearchLinks(result any) int {
+	data, ok := result.(map[string]any)
+	if !ok {
+		return 0
+	}
+	total := 0
+	for _, value := range data {
+		items, ok := value.([]any)
+		if ok {
+			total += len(items)
+		}
+	}
+	return total
+}
+
+func countGoogleCSEItems(result any) int {
+	data, ok := result.(map[string]any)
+	if !ok {
+		return 0
+	}
+	for _, key := range []string{"items", "results"} {
+		items, ok := data[key].([]any)
+		if ok {
+			return len(items)
+		}
+	}
+	return 0
 }
 
 func googleCSEDetails(data map[string]any, limit int) []string {
