@@ -37,3 +37,55 @@ func TestAPIErrorMessage(t *testing.T) {
 		t.Fatalf("apiErrorMessage() = %q, want boom", got)
 	}
 }
+
+func TestScannerSkipReason(t *testing.T) {
+	info := phoneInfoGaNumber{CountryCode: 351}
+	credentials := phoneInfoGaCredentials{}
+
+	if got := scannerSkipReason("numverify", info, credentials); got == "" {
+		t.Fatal("numverify without key should be skipped")
+	}
+	if got := scannerSkipReason("googlecse", info, credentials); got == "" {
+		t.Fatal("googlecse without keys should be skipped")
+	}
+	if got := scannerSkipReason("ovh", info, credentials); got == "" {
+		t.Fatal("ovh should skip unsupported Portuguese country code")
+	}
+	if got := scannerSkipReason("local", info, credentials); got != "" {
+		t.Fatalf("local skip reason = %q, want empty", got)
+	}
+}
+
+func TestScannerOptions(t *testing.T) {
+	credentials := phoneInfoGaCredentials{
+		"NUMVERIFY_API_KEY": "numverify-secret",
+		"GOOGLE_API_KEY":    "google-secret",
+		"GOOGLECSE_CX":      "cx-value",
+	}
+
+	if got := scannerOptions("numverify", credentials)["NUMVERIFY_API_KEY"]; got != "numverify-secret" {
+		t.Fatalf("numverify option = %v", got)
+	}
+	options := scannerOptions("googlecse", credentials)
+	if options["GOOGLE_API_KEY"] != "google-secret" || options["GOOGLECSE_CX"] != "cx-value" {
+		t.Fatalf("googlecse options = %#v", options)
+	}
+}
+
+func TestRecordStatusWithSkippedScanners(t *testing.T) {
+	rec := phoneInfoGaRecord{
+		NumberInfo: &phoneInfoGaNumber{Valid: true},
+		Scanners: []phoneInfoGaScannerRun{
+			{Name: "local", Status: "ok"},
+			{Name: "ovh", Status: "skipped"},
+		},
+	}
+	if got := recordStatus(rec); got != "PARTIAL" {
+		t.Fatalf("recordStatus() = %q, want PARTIAL", got)
+	}
+
+	rec.Scanners = []phoneInfoGaScannerRun{{Name: "ovh", Status: "skipped"}}
+	if got := recordStatus(rec); got != "SKIPPED" {
+		t.Fatalf("recordStatus() = %q, want SKIPPED", got)
+	}
+}

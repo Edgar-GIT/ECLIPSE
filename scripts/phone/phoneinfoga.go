@@ -91,6 +91,8 @@ type phoneInfoGaScannerRun struct {
 	Result          any     `json:"result,omitempty"`
 }
 
+type phoneInfoGaCredentials map[string]string
+
 type phoneInfoGaRunResponse struct {
 	Result any    `json:"result"`
 	Error  string `json:"error,omitempty"`
@@ -210,9 +212,10 @@ func runPhoneInfoGa(reader *bufio.Reader) {
 	if number == "" {
 		return
 	}
+	credentials := ensurePhoneInfoGaCredentials(reader)
 
 	fmt.Printf("\n%s[*] Preparing PhoneInfoga...%s\n", utils.Yellow, utils.Reset)
-	rec := lookupNumber(context.Background(), number)
+	rec := lookupNumber(context.Background(), number, credentials)
 	displayRecord(rec)
 	saveAndReportRecord(rec)
 	utils.WaitForEnter(reader)
@@ -239,7 +242,7 @@ func promptPhoneNumber(reader *bufio.Reader) string {
 	return number
 }
 
-func lookupNumber(ctx context.Context, number string) phoneInfoGaRecord {
+func lookupNumber(ctx context.Context, number string, credentials phoneInfoGaCredentials) phoneInfoGaRecord {
 	baseURL, startedLocal, bootstrapErr := ensurePhoneInfoGaAPI(ctx)
 	rec := phoneInfoGaRecord{
 		ID:         fmt.Sprintf("%s_phoneinfoga_%s", time.Now().Format("20060102_150405"), safePhoneFilename(number)),
@@ -285,7 +288,7 @@ func lookupNumber(ctx context.Context, number string) phoneInfoGaRecord {
 	if scanNumber == "" {
 		scanNumber = number
 	}
-	rec.Scanners = runScanners(ctx, client, baseURL, scanNumber, scanners)
+	rec.Scanners = runScanners(ctx, client, baseURL, scanNumber, scanners, *rec.NumberInfo, credentials)
 	return rec
 }
 
@@ -533,7 +536,7 @@ func getScanners(ctx context.Context, client *http.Client, baseURL string) ([]ph
 	return out.Scanners, nil
 }
 
-func runScanners(ctx context.Context, client *http.Client, baseURL, number string, scanners []phoneInfoGaScanner) []phoneInfoGaScannerRun {
+func runScanners(ctx context.Context, client *http.Client, baseURL, number string, scanners []phoneInfoGaScanner, info phoneInfoGaNumber, credentials phoneInfoGaCredentials) []phoneInfoGaScannerRun {
 	workers := phoneInfoGaWorkers
 	if workers > len(scanners) {
 		workers = len(scanners)
@@ -552,7 +555,11 @@ func runScanners(ctx context.Context, client *http.Client, baseURL, number strin
 			defer wg.Done()
 			for idx := range jobs {
 				scanner := scanners[idx]
-				results[idx] = runScanner(ctx, client, baseURL, number, scanner)
+				if reason := scannerSkipReason(scanner.Name, info, credentials); reason != "" {
+					results[idx] = skippedScanner(scanner, reason)
+					continue
+				}
+				results[idx] = runScanner(ctx, client, baseURL, number, scanner, credentials)
 			}
 		}()
 	}
@@ -565,7 +572,7 @@ func runScanners(ctx context.Context, client *http.Client, baseURL, number strin
 	return results
 }
 
-func runScanner(ctx context.Context, client *http.Client, baseURL, number string, scanner phoneInfoGaScanner) phoneInfoGaScannerRun {
+func runScanner(ctx context.Context, client *http.Client, baseURL, number string, scanner phoneInfoGaScanner, credentials phoneInfoGaCredentials) phoneInfoGaScannerRun {
 	rec := phoneInfoGaScannerRun{
 		Name:        scanner.Name,
 		Description: scanner.Description,
@@ -575,7 +582,7 @@ func runScanner(ctx context.Context, client *http.Client, baseURL, number string
 	endpoint := baseURL + "/v2/scanners/" + url.PathEscape(scanner.Name) + "/run"
 	payload := map[string]any{
 		"number":  number,
-		"options": map[string]any{},
+		"options": scannerOptions(scanner.Name, credentials),
 	}
 	var out phoneInfoGaRunResponse
 
@@ -595,6 +602,57 @@ func runScanner(ctx context.Context, client *http.Client, baseURL, number string
 	}
 	rec.Result = out.Result
 	return rec
+}
+
+func scannerSkipReason(scanner string, info phoneInfoGaNumber, credentials phoneInfoGaCredentials) string {
+	switch strings.ToLower(strings.TrimSpace(scanner)) {
+	case "numverify":
+		if credentials["NUMVERIFY_API_KEY"] == "" {
+			return "NUMVERIFY_API_KEY is not configured"
+		}
+	case "googlecse":
+		if credentials["GOOGLE_API_KEY"] == "" || credentials["GOOGLECSE_CX"] == "" {
+			return "GOOGLE_API_KEY and GOOGLECSE_CX are not configured"
+		}
+	case "ovh":
+		if !isOVHSupportedCountryCode(info.CountryCode) {
+			return fmt.Sprintf("OVH scanner does not support country code +%d", info.CountryCode)
+		}
+	}
+	return ""
+}
+
+func scannerOptions(scanner string, credentials phoneInfoGaCredentials) map[string]any {
+	options := map[string]any{}
+	switch strings.ToLower(strings.TrimSpace(scanner)) {
+	case "numverify":
+		options["NUMVERIFY_API_KEY"] = credentials["NUMVERIFY_API_KEY"]
+	case "googlecse":
+		options["GOOGLE_API_KEY"] = credentials["GOOGLE_API_KEY"]
+		options["GOOGLECSE_CX"] = credentials["GOOGLECSE_CX"]
+		if credentials["GOOGLECSE_MAX_RESULTS"] != "" {
+			options["GOOGLECSE_MAX_RESULTS"] = credentials["GOOGLECSE_MAX_RESULTS"]
+		}
+	}
+	return options
+}
+
+func skippedScanner(scanner phoneInfoGaScanner, reason string) phoneInfoGaScannerRun {
+	return phoneInfoGaScannerRun{
+		Name:        scanner.Name,
+		Description: scanner.Description,
+		Status:      "skipped",
+		Error:       reason,
+	}
+}
+
+func isOVHSupportedCountryCode(code int) bool {
+	switch code {
+	case 33, 32, 44, 34, 41:
+		return true
+	default:
+		return false
+	}
 }
 
 func requestJSON(ctx context.Context, client *http.Client, method, endpoint string, payload any, dest any) (float64, int, error) {
@@ -689,7 +747,12 @@ func printScannerRuns(scanners []phoneInfoGaScannerRun) {
 	fmt.Printf("\n%sSCANNERS%s\n", utils.Blue, utils.Reset)
 	for _, scanner := range scanners {
 		color := utils.Green
-		if scanner.Status != "ok" {
+		switch scanner.Status {
+		case "skipped":
+			color = utils.Yellow
+		case "ok":
+			color = utils.Green
+		default:
 			color = utils.Red
 		}
 		fmt.Printf("%s%s%s | %s | %.2fs", color, scanner.Name, utils.Reset, strings.ToUpper(scanner.Status), scanner.DurationSeconds)
@@ -747,7 +810,8 @@ func showHistoryRecord(reader *bufio.Reader, rec phoneInfoGaRecord) {
 			}
 			utils.WaitForEnter(reader)
 		case "2":
-			fresh := lookupNumber(context.Background(), rec.Number)
+			credentials := ensurePhoneInfoGaCredentials(reader)
+			fresh := lookupNumber(context.Background(), rec.Number, credentials)
 			displayRecord(fresh)
 			saveAndReportRecord(fresh)
 			utils.WaitForEnter(reader)
@@ -842,6 +906,105 @@ func deleteHistory(reader *bufio.Reader) {
 	utils.WaitForEnter(reader)
 }
 
+func ensurePhoneInfoGaCredentials(reader *bufio.Reader) phoneInfoGaCredentials {
+	credentials, exists, err := loadPhoneInfoGaCredentials()
+	if err != nil {
+		fmt.Printf("%s[!] Failed to load PhoneInfoga keys: %v%s\n", utils.Yellow, err, utils.Reset)
+		return credentials
+	}
+	if exists {
+		if missing := missingPhoneInfoGaCredentialGroups(credentials); len(missing) > 0 {
+			fmt.Printf("%sOptional PhoneInfoga scanners disabled: %s. Edit %s to enable them.%s\n",
+				utils.Yellow, strings.Join(missing, ", "), phoneInfoGaCredentialsFile(), utils.Reset)
+		}
+		return credentials
+	}
+
+	fmt.Printf("\n%s=== PHONEINFOGA API KEYS ===%s\n", utils.Blue, utils.Reset)
+	fmt.Printf("%sOptional scanners need external API keys:%s\n", utils.Yellow, utils.Reset)
+	fmt.Printf("%s- Numverify: NUMVERIFY_API_KEY from https://numverify.com/%s\n", utils.Yellow, utils.Reset)
+	fmt.Printf("%s- Google CSE: GOOGLE_API_KEY and GOOGLECSE_CX from Google Custom Search JSON API%s\n", utils.Yellow, utils.Reset)
+	fmt.Printf("%sLeave a value empty to skip that scanner. Keys will be saved to:%s %s\n\n", utils.Yellow, utils.Reset, phoneInfoGaCredentialsFile())
+
+	credentials["NUMVERIFY_API_KEY"] = promptCredential(reader, "NUMVERIFY_API_KEY")
+	credentials["GOOGLE_API_KEY"] = promptCredential(reader, "GOOGLE_API_KEY")
+	credentials["GOOGLECSE_CX"] = promptCredential(reader, "GOOGLECSE_CX")
+	if err := savePhoneInfoGaCredentials(credentials); err != nil {
+		fmt.Printf("%s[!] Failed to save PhoneInfoga keys: %v%s\n", utils.Yellow, err, utils.Reset)
+	} else {
+		fmt.Printf("%s[OK] PhoneInfoga key file saved.%s\n", utils.Green, utils.Reset)
+	}
+	return credentials
+}
+
+func promptCredential(reader *bufio.Reader, key string) string {
+	fmt.Printf("%s%s (Enter to skip): %s", utils.Green, key, utils.Reset)
+	line, _ := reader.ReadString('\n')
+	return strings.TrimSpace(line)
+}
+
+func loadPhoneInfoGaCredentials() (phoneInfoGaCredentials, bool, error) {
+	credentials := phoneInfoGaCredentials{}
+	for _, key := range phoneInfoGaCredentialKeys() {
+		credentials[key] = strings.TrimSpace(os.Getenv(key))
+	}
+
+	raw, err := os.ReadFile(phoneInfoGaCredentialsFile())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return credentials, false, nil
+		}
+		return credentials, false, err
+	}
+
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		if _, allowed := credentials[key]; !allowed {
+			continue
+		}
+		value = strings.Trim(strings.TrimSpace(value), `"'`)
+		if value != "" {
+			credentials[key] = value
+		}
+	}
+	return credentials, true, nil
+}
+
+func savePhoneInfoGaCredentials(credentials phoneInfoGaCredentials) error {
+	if err := os.MkdirAll(filepath.Dir(phoneInfoGaCredentialsFile()), 0755); err != nil {
+		return err
+	}
+	var b strings.Builder
+	b.WriteString("NUMVERIFY_API_KEY=" + credentials["NUMVERIFY_API_KEY"] + "\n")
+	b.WriteString("GOOGLE_API_KEY=" + credentials["GOOGLE_API_KEY"] + "\n")
+	b.WriteString("GOOGLECSE_CX=" + credentials["GOOGLECSE_CX"] + "\n")
+	b.WriteString("GOOGLECSE_MAX_RESULTS=" + credentials["GOOGLECSE_MAX_RESULTS"] + "\n")
+	return os.WriteFile(phoneInfoGaCredentialsFile(), []byte(b.String()), 0600)
+}
+
+func phoneInfoGaCredentialKeys() []string {
+	return []string{"NUMVERIFY_API_KEY", "GOOGLE_API_KEY", "GOOGLECSE_CX", "GOOGLECSE_MAX_RESULTS"}
+}
+
+func missingPhoneInfoGaCredentialGroups(credentials phoneInfoGaCredentials) []string {
+	var missing []string
+	if credentials["NUMVERIFY_API_KEY"] == "" {
+		missing = append(missing, "numverify")
+	}
+	if credentials["GOOGLE_API_KEY"] == "" || credentials["GOOGLECSE_CX"] == "" {
+		missing = append(missing, "googlecse")
+	}
+	return missing
+}
+
 func scannerResultSummary(result any) string {
 	switch v := result.(type) {
 	case nil:
@@ -876,15 +1039,26 @@ func recordStatus(rec phoneInfoGaRecord) string {
 		return "OK"
 	}
 	failed := 0
+	skipped := 0
 	for _, scanner := range rec.Scanners {
-		if scanner.Status != "ok" {
+		switch scanner.Status {
+		case "ok":
+		case "skipped":
+			skipped++
+		default:
 			failed++
 		}
 	}
 	if failed == 0 {
+		if skipped == len(rec.Scanners) {
+			return "SKIPPED"
+		}
+		if skipped > 0 {
+			return "PARTIAL"
+		}
 		return "OK"
 	}
-	if failed == len(rec.Scanners) {
+	if failed+skipped == len(rec.Scanners) && skipped == 0 {
 		return "ERROR"
 	}
 	return "PARTIAL"
@@ -1087,6 +1261,10 @@ func historyFile() string {
 
 func activityLogFile() string {
 	return filepath.Join(phoneReportsDir(), "activity.log")
+}
+
+func phoneInfoGaCredentialsFile() string {
+	return filepath.Join(phoneReportsDir(), "phoneinfoga_keys.txt")
 }
 
 func phoneInfoGaPort(baseURL string) string {

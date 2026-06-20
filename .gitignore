@@ -12,6 +12,7 @@ teste
 *.json
 reports/
 target/
+reports/phone/phoneinfoga_keys.txt
 # Report directories
 osint_reports/
 target/osint_reports/
