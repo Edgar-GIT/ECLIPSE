@@ -692,11 +692,19 @@ function m(v){
 }
 let r=0;
 for(const dbInfo of T){
-  const db=await new Promise((res,rej)=>{const r=indexedDB.open(dbInfo.name);r.onsuccess=e=>res(e.target.result);r.onerror=e=>rej(e.target.error)});
+  let db;
+  try{
+    db=await new Promise((res,rej)=>{const r=indexedDB.open(dbInfo.name);r.onsuccess=e=>res(e.target.result);r.onerror=e=>rej(e.target.error)});
+  }catch(e){continue;}
+  if(!db)continue;
   for(const storeInfo of dbInfo.stores){
     const entries=storeInfo.entries;
     if(!entries||!entries.length)continue;
-    const tx=db.transaction(storeInfo.name,'readwrite'),st=tx.objectStore(storeInfo.name);
+    let tx,st;
+    try{
+      tx=db.transaction(storeInfo.name,'readwrite');
+      st=tx.objectStore(storeInfo.name);
+    }catch(e){continue;}
     await new Promise((res,rej)=>{
       const c=st.clear();
       c.onsuccess=async()=>{
@@ -711,7 +719,7 @@ for(const dbInfo of T){
       c.onerror=e=>{rej(e.target.error)};
     });
   }
-  db.close();
+  if(db)db.close();
 }
 return "OK: "+r+" entries imported";
 })()`, templateJSON)
