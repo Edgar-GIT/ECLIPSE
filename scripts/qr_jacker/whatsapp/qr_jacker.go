@@ -3,8 +3,10 @@ package whatsapp
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"net"
 	"net/http"
 	"os"
@@ -16,6 +18,7 @@ import (
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/store"
+	"go.mau.fi/whatsmeow/util/keys"
 	waLog "go.mau.fi/whatsmeow/util/log"
 	"rsc.io/qr"
 
@@ -122,15 +125,7 @@ func launchAttack(cfg attackCfg) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	device := &store.Device{
-		Container: &store.NoopStore{},
-	}
-	device.SetAllStores(&store.NoopStore{})
-	if err := device.Save(ctx); err != nil {
-		fmt.Printf("%s[!] Failed to initialize device: %v%s\n", utils.Red, err, utils.Reset)
-		utils.PauseForInput()
-		return
-	}
+	device := newDevice()
 	cli := whatsmeow.NewClient(device, waLog.Noop)
 
 	qrChan, err := cli.GetQRChannel(ctx)
@@ -571,6 +566,59 @@ func detectBrowser() string {
 		}
 	}
 	return ""
+}
+
+type memPreKeyStore struct {
+	store.NoopStore
+	uploaded uint32
+}
+
+func (m *memPreKeyStore) GenOnePreKey(ctx context.Context) (*keys.PreKey, error) {
+	return keys.NewPreKey(m.uploaded + 1), nil
+}
+
+func (m *memPreKeyStore) GetOrGenPreKeys(ctx context.Context, count uint32) ([]*keys.PreKey, error) {
+	pks := make([]*keys.PreKey, count)
+	for i := range pks {
+		m.uploaded++
+		pks[i] = keys.NewPreKey(m.uploaded)
+	}
+	return pks, nil
+}
+
+func (m *memPreKeyStore) MarkPreKeysAsUploaded(ctx context.Context, upToID uint32) error {
+	m.uploaded = upToID
+	return nil
+}
+
+func (m *memPreKeyStore) UploadedPreKeyCount(ctx context.Context) (int, error) {
+	return int(m.uploaded), nil
+}
+
+func newDevice() *store.Device {
+	noop := &store.NoopStore{}
+	d := &store.Device{
+		Container:       noop,
+		NoiseKey:        keys.NewKeyPair(),
+		IdentityKey:     keys.NewKeyPair(),
+		SignedPreKey:    keys.NewPreKey(0),
+		RegistrationID:  randUint32(),
+		AdvSecretKey:    randBytes(32),
+	}
+	d.SetAllStores(noop)
+	d.PreKeys = &memPreKeyStore{}
+	return d
+}
+
+func randUint32() uint32 {
+	n, _ := rand.Int(rand.Reader, big.NewInt(1<<32))
+	return uint32(n.Int64())
+}
+
+func randBytes(n int) []byte {
+	b := make([]byte, n)
+	rand.Read(b)
+	return b
 }
 
 func parseAddr(addr string) (string, int) {
