@@ -353,16 +353,20 @@ func runInteractiveCommand(name string, args ...string) error {
 
 func createFakeLAN() {
 	utils.ClearTerminal()
-	fmt.Printf("\n%s═══ CREATE FAKE LAN ═══%s\n\n", utils.Green, utils.Reset)
+	fmt.Printf("\n%s═══ CREATE WI-FI NETWORK ═══%s\n\n", utils.Green, utils.Reset)
+	fmt.Printf("%s[i] This will create a Wi-Fi network using your computer's wireless adapter.%s\n", utils.Blue, utils.Reset)
+	fmt.Printf("%s[i] Internet will be shared from your phone via USB tethering.%s\n\n", utils.Blue, utils.Reset)
 
 	reader := bufio.NewReader(os.Stdin)
 
 	var ssid string
 	for {
-		fmt.Printf("%sNetwork Name (SSID 1-32 chars): %s", utils.Green, utils.Reset)
+		fmt.Printf("%sSSID (default: EDGAR): %s", utils.Green, utils.Reset)
 		input, _ := reader.ReadString('\n')
 		input = strings.TrimSpace(input)
-
+		if input == "" {
+			input = "EDGAR"
+		}
 		valid, errMsg := validateSSID(input)
 		if !valid {
 			fmt.Printf("%s[!] Invalid SSID: %s%s\n", utils.Red, errMsg, utils.Reset)
@@ -372,53 +376,74 @@ func createFakeLAN() {
 		break
 	}
 
-	fmt.Printf("%sProvide real internet? (y/n): %s", utils.Yellow, utils.Reset)
-	provideInternetInput, _ := reader.ReadString('\n')
-	provideInternetInput = strings.ToLower(strings.TrimSpace(provideInternetInput))
-	provideInternet = provideInternetInput == "y" || provideInternetInput == "yes"
-	if provideInternet {
-		fmt.Printf("%s[i] Requires host internet on a different interface than the AP (e.g. ethernet, USB tethering/mobile data, or a 2nd Wi-Fi adapter).%s\n", utils.Blue, utils.Reset)
-	}
+	fmt.Printf("%sPassword (leave empty for open network): %s", utils.Yellow, utils.Reset)
+	password, _ := reader.ReadString('\n')
+	password = strings.TrimSpace(password)
 
-	fmt.Printf("%sRequire password? (y/n): %s", utils.Yellow, utils.Reset)
-	requirePassword, _ := reader.ReadString('\n')
-	requirePassword = strings.ToLower(strings.TrimSpace(requirePassword))
-
-	var password string
 	securityMode := "Open"
-	if requirePassword == "y" || requirePassword == "yes" {
-		fmt.Printf("%sPassword (WPA2 >=8, shorter falls back): %s", utils.Green, utils.Reset)
-		password, _ = reader.ReadString('\n')
-		password = strings.TrimSpace(password)
-		if password == "" {
-			fmt.Printf("%s[!] Password cannot be empty%s\n", utils.Red, utils.Reset)
-			utils.PauseForInput()
-			return
-		}
+	if password != "" {
 		securityMode = detectSecurityMode(password)
 		if securityMode == "WEP" {
 			fmt.Printf("%s[!] Password < 8 chars, using WEP fallback (insecure)%s\n", utils.Yellow, utils.Reset)
 		}
 	}
 
-	fmt.Printf("\n%s[*] Starting Fake LAN...%s\n", utils.Yellow, utils.Reset)
-	fmt.Printf("%s[*] SSID: %s%s\n", utils.Yellow, ssid, utils.Reset)
-	fmt.Printf("%s[*] Security: %s%s\n", utils.Yellow, securityMode, utils.Reset)
+	fmt.Printf("\n%s═══════════════════════════════════════════════════════%s\n", utils.Purple, utils.Reset)
+	fmt.Printf("%s  STEP 1/4: Connect your phone via USB%s\n", utils.Purple, utils.Reset)
+	fmt.Printf("%s═══════════════════════════════════════════════════════%s\n\n", utils.Purple, utils.Reset)
+	fmt.Printf("%s[*] Please connect your phone to this computer using a USB cable.%s\n", utils.Yellow, utils.Reset)
+	fmt.Printf("%s[*] Press Enter when ready...%s", utils.Yellow, utils.Reset)
+	reader.ReadString('\n')
+
+	fmt.Printf("\n%s═══════════════════════════════════════════════════════%s\n", utils.Purple, utils.Reset)
+	fmt.Printf("%s  STEP 2/4: Enable USB Tethering%s\n", utils.Purple, utils.Reset)
+	fmt.Printf("%s═══════════════════════════════════════════════════════%s\n\n", utils.Purple, utils.Reset)
+	fmt.Printf("%s[*] On your phone, go to Settings → Network/Connections → USB Tethering and enable it.%s\n", utils.Yellow, utils.Reset)
+	fmt.Printf("%s[*] Waiting for USB network interface...%s\n", utils.Yellow, utils.Reset)
+
+	usbIface, err := waitForUSBInterface(120 * time.Second)
+	if err != nil {
+		fmt.Printf("\n%s[!] %s%s\n", utils.Red, err.Error(), utils.Reset)
+		fmt.Printf("%s[!] Please enable USB Tethering on your phone and try again.%s\n", utils.Red, utils.Reset)
+		utils.PauseForInput()
+		return
+	}
+
+	fmt.Printf("%s[✓] USB network detected.%s\n", utils.Green, utils.Reset)
+	fmt.Printf("%s[*] Interface: %s%s\n", utils.Yellow, usbIface, utils.Reset)
+
+	if err := validateUSBInterface(usbIface); err != nil {
+		fmt.Printf("%s[!] USB interface validation failed: %v%s\n", utils.Red, err, utils.Reset)
+		utils.PauseForInput()
+		return
+	}
+	fmt.Printf("%s[✓] Internet connection verified.%s\n", utils.Green, utils.Reset)
 
 	iface := selectWirelessInterface()
 	if iface == "" {
-		fmt.Printf("%s[!] No wireless interface found%s\n", utils.Red, utils.Reset)
+		fmt.Printf("%s[!] No wireless interface found for Access Point%s\n", utils.Red, utils.Reset)
 		utils.PauseForInput()
 		return
 	}
 
 	apInterface = iface
+	internetInterface = usbIface
+	provideInternet = true
+
+	fmt.Printf("\n%s═══════════════════════════════════════════════════════%s\n", utils.Purple, utils.Reset)
+	fmt.Printf("%s  STEP 3/4: Creating Wi-Fi network%s\n", utils.Purple, utils.Reset)
+	fmt.Printf("%s═══════════════════════════════════════════════════════%s\n\n", utils.Purple, utils.Reset)
+	fmt.Printf("%s[*] SSID: %s%s\n", utils.Yellow, ssid, utils.Reset)
+	fmt.Printf("%s[*] Security: %s%s\n", utils.Yellow, securityMode, utils.Reset)
+	fmt.Printf("%s[*] Wireless interface: %s%s\n", utils.Yellow, iface, utils.Reset)
+	fmt.Printf("%s[*] Internet source: %s (USB Tethering)%s\n", utils.Yellow, usbIface, utils.Reset)
 
 	config := APConfig{
-		SSID:            ssid,
-		Interface:       iface,
-		Password:        password,
-		ProvideInternet: provideInternet,
+		SSID:              ssid,
+		Interface:         iface,
+		Password:          password,
+		ProvideInternet:   true,
+		UpstreamInterface: usbIface,
 	}
 
 	if logDir, err := initializeSessionLogDir("lan", ssid); err != nil {
@@ -434,13 +459,22 @@ func createFakeLAN() {
 		startFakeLANLinux(config)
 	}
 	if !apRunning {
-		fmt.Printf("%s[!] Failed to start Fake LAN '%s'%s\n", utils.Red, ssid, utils.Reset)
+		fmt.Printf("%s[!] Failed to start Wi-Fi network%s\n", utils.Red, utils.Reset)
 		utils.PauseForInput()
 		return
 	}
 
-	fmt.Printf("\n%s[✓] Fake LAN '%s' is running!%s\n", utils.Green, ssid, utils.Reset)
-	fmt.Printf("%s[*] Monitoring connections...%s\n\n", utils.Yellow, utils.Reset)
+	fmt.Printf("\n%s═══════════════════════════════════════════════════════%s\n", utils.Purple, utils.Reset)
+	fmt.Printf("%s  STEP 4/4: Wi-Fi Network Ready%s\n", utils.Purple, utils.Reset)
+	fmt.Printf("%s═══════════════════════════════════════════════════════%s\n\n", utils.Purple, utils.Reset)
+	fmt.Printf("%s[✓] SSID: %s%s\n", utils.Green, ssid, utils.Reset)
+	if password != "" {
+		fmt.Printf("%s[✓] Password: %s%s\n", utils.Green, password, utils.Reset)
+	} else {
+		fmt.Printf("%s[✓] Security: Open%s\n", utils.Green, utils.Reset)
+	}
+	fmt.Printf("%s[✓] Internet: USB Tethering (%s)%s\n", utils.Green, usbIface, utils.Reset)
+	fmt.Printf("%s[✓] Clients connected: %d%s\n\n", utils.Green, len(connectedClients), utils.Reset)
 
 	go monitorClients(iface)
 
@@ -602,19 +636,21 @@ func launchEvilTwin() {
 }
 
 type APConfig struct {
-	SSID            string
-	Interface       string
-	Password        string
-	ProvideInternet bool
-	CaptivePortal   bool
+	SSID              string
+	Interface         string
+	Password          string
+	ProvideInternet   bool
+	CaptivePortal     bool
+	UpstreamInterface string
 }
 
 type EvilTwinConfig struct {
-	TargetSSID      string
-	Interface       string
-	Mode            string
-	Password        string
-	ProvideInternet bool
+	TargetSSID          string
+	Interface           string
+	Mode                string
+	Password            string
+	ProvideInternet     bool
+	UpstreamInterface   string
 }
 
 type WiFiNetwork struct {
@@ -965,7 +1001,7 @@ func startFakeLANLinux(config APConfig) {
 	syncDnsmasqAddressRules()
 
 	if config.ProvideInternet {
-		if err := configureInternetSharing(config.Interface); err != nil {
+		if err := configureInternetSharing(config.Interface, config.UpstreamInterface); err != nil {
 			fmt.Printf("%s[!] Internet sharing not enabled: %v%s\n", utils.Red, err, utils.Reset)
 			fmt.Printf("%s[!] AP will run without internet forwarding%s\n", utils.Yellow, utils.Reset)
 		}
@@ -2875,34 +2911,392 @@ func formatBytes(bytes int64) string {
 	}
 }
 
-func configureInternetSharing(apIface string) error {
-	upstreamIface, err := detectInternetInterface(apIface)
-	if err != nil || upstreamIface == "" || upstreamIface == apIface {
-		selectedIface, selectErr := promptUpstreamInterface(apIface, upstreamIface, err)
-		if selectErr != nil {
-			return selectErr
+func isUSBInterface(name string) bool {
+	name = strings.ToLower(name)
+	if strings.HasPrefix(name, "usb") || strings.HasPrefix(name, "enx") || strings.HasPrefix(name, "rndis") {
+		return true
+	}
+	return false
+}
+
+func ifaceHasIPv4(name string) bool {
+	iface, err := net.InterfaceByName(name)
+	if err != nil {
+		return false
+	}
+	addrs, err := iface.Addrs()
+	if err != nil {
+		return false
+	}
+	for _, addr := range addrs {
+		if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.To4() != nil {
+			return true
 		}
-		upstreamIface = selectedIface
+	}
+	return false
+}
+
+func ifaceHasDefaultRoute(name string) bool {
+	out, err := exec.Command("ip", "route", "show", "default", "dev", name).Output()
+	return err == nil && strings.Contains(string(out), "default via")
+}
+
+func findUSBInterfaceWithInternet() (string, error) {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return "", err
+	}
+	for _, iface := range ifaces {
+		name := iface.Name
+		if !isUSBInterface(name) {
+			continue
+		}
+		if iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+		if ifaceHasIPv4(name) && ifaceHasDefaultRoute(name) {
+			return name, nil
+		}
+	}
+	return "", fmt.Errorf("no USB interface with internet found")
+}
+
+func waitForUSBInterface(timeout time.Duration) (string, error) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if iface, err := findUSBInterfaceWithInternet(); err == nil {
+			return iface, nil
+		}
+		time.Sleep(2 * time.Second)
+	}
+	return "", fmt.Errorf("No USB network interface detected. Please enable USB Tethering on your phone and try again.")
+}
+
+func validateUSBInterface(iface string) error {
+	if !ifaceHasIPv4(iface) {
+		return fmt.Errorf("no IPv4 address on %s", iface)
+	}
+	if !ifaceHasDefaultRoute(iface) {
+		return fmt.Errorf("no default route on %s - check USB tethering is enabled", iface)
+	}
+	if _, err := exec.LookPath("curl"); err == nil {
+		for _, target := range []string{"http://1.1.1.1", "http://8.8.8.8", "http://example.com"} {
+			cmd := exec.Command("curl", "-s", "-o", "/dev/null", "--connect-timeout", "5", "--interface", iface, target)
+			if cmd.Run() == nil {
+				return nil
+			}
+		}
+		return fmt.Errorf("cannot reach internet via %s", iface)
 	}
 
-	internetInterface = upstreamIface
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	resolver := &net.Resolver{}
+	if _, err := resolver.LookupHost(ctx, "google.com"); err != nil {
+		return fmt.Errorf("DNS resolution failed: %w", err)
+	}
+	return nil
+}
 
+func checkPass(step, msg string) {
+	fmt.Printf("%s[✓] %s: %s%s\n", utils.Green, step, msg, utils.Reset)
+}
+
+func checkFail(step, msg string) {
+	fmt.Printf("%s[✗] %s: %s%s\n", utils.Red, step, msg, utils.Reset)
+}
+
+func checkInfo(step, msg string) {
+	fmt.Printf("%s[i] %s: %s%s\n", utils.Blue, step, msg, utils.Reset)
+}
+
+func enableIPForward() error {
 	if err := exec.Command("sysctl", "-w", "net.ipv4.ip_forward=1").Run(); err != nil {
-		return fmt.Errorf("failed enabling ip_forward: %w", err)
+		return fmt.Errorf("sysctl: %w", err)
+	}
+	out, err := os.ReadFile("/proc/sys/net/ipv4/ip_forward")
+	if err != nil {
+		return fmt.Errorf("cannot read ip_forward: %w", err)
+	}
+	if strings.TrimSpace(string(out)) != "1" {
+		return fmt.Errorf("ip_forward=%s (expected 1)", strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func detectFirewallBackend() string {
+	if _, err := exec.LookPath("nft"); err == nil {
+		out, _ := exec.Command("nft", "list", "ruleset").Output()
+		if strings.Contains(string(out), "chain") {
+			return "nftables"
+		}
+	}
+	out, err := exec.Command("iptables", "--version").Output()
+	if err != nil {
+		return "unknown"
+	}
+	v := string(out)
+	if strings.Contains(v, "nft") {
+		return "iptables-nft (nftables backend)"
+	}
+	if strings.Contains(v, "legacy") {
+		return "iptables-legacy"
+	}
+	return "iptables"
+}
+
+func ensureNFTablesForward(apIface, upstreamIface string) {
+	if _, err := exec.LookPath("nft"); err != nil {
+		return
+	}
+	out, err := exec.Command("nft", "list", "ruleset").Output()
+	if err != nil || !strings.Contains(string(out), "chain") {
+		return
+	}
+	tables := [][2]string{
+		{"inet", "filter"},
+		{"ip", "filter"},
+		{"inet", "firewalld"},
+		{"ip", "firewalld"},
+	}
+	for _, t := range tables {
+		chain := "FORWARD"
+		if t[0] == "inet" {
+			chain = "forward"
+		}
+		rules := []string{
+			fmt.Sprintf("add rule %s %s %s iif %s oif %s accept", t[0], t[1], chain, apIface, upstreamIface),
+			fmt.Sprintf("add rule %s %s %s iif %s oif %s ct state related,established accept", t[0], t[1], chain, upstreamIface, apIface),
+		}
+		for _, r := range rules {
+			exec.Command("nft", strings.Fields(r)...).Run()
+		}
+	}
+}
+
+func cleanupNFTablesForward(apIface, upstreamIface string) {
+	if _, err := exec.LookPath("nft"); err != nil {
+		return
+	}
+	tables := [][2]string{
+		{"inet", "filter"},
+		{"ip", "filter"},
+		{"inet", "firewalld"},
+		{"ip", "firewalld"},
+	}
+	for _, t := range tables {
+		chain := "FORWARD"
+		if t[0] == "inet" {
+			chain = "forward"
+		}
+		rules := []string{
+			fmt.Sprintf("delete rule %s %s %s iif %s oif %s accept", t[0], t[1], chain, apIface, upstreamIface),
+			fmt.Sprintf("delete rule %s %s %s iif %s oif %s ct state related,established accept", t[0], t[1], chain, upstreamIface, apIface),
+		}
+		for _, r := range rules {
+			exec.Command("nft", strings.Fields(r)...).Run()
+		}
+	}
+}
+
+func verifyInterfaceHasInternet(iface string) error {
+	out, err := exec.Command("ip", "-4", "addr", "show", "dev", iface).Output()
+	if err != nil {
+		return fmt.Errorf("interface %s not found", iface)
+	}
+	if !strings.Contains(string(out), "inet ") {
+		return fmt.Errorf("no IPv4 address on %s", iface)
+	}
+	out, err = exec.Command("ip", "route", "show", "default", "dev", iface).Output()
+	if err != nil || !strings.Contains(string(out), "default via") {
+		return fmt.Errorf("no default gateway on %s", iface)
+	}
+	if _, err := exec.LookPath("curl"); err == nil {
+		for _, target := range []string{"http://1.1.1.1", "http://8.8.8.8", "http://example.com"} {
+			cmd := exec.Command("curl", "-s", "-o", "/dev/null", "--connect-timeout", "5", "--interface", iface, target)
+			if cmd.Run() == nil {
+				return nil
+			}
+		}
+		return fmt.Errorf("cannot reach any HTTP target via %s", iface)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	resolver := &net.Resolver{}
+	if _, err := resolver.LookupHost(ctx, "google.com"); err != nil {
+		return fmt.Errorf("DNS resolution failed: %w", err)
+	}
+	return nil
+}
+
+func applyForwardRules(apIface, upstreamIface string) error {
+	rules := [][]string{
+		{"FORWARD", "-i", apIface, "-o", upstreamIface, "-j", "ACCEPT"},
+		{"FORWARD", "-i", upstreamIface, "-o", apIface, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"},
+	}
+	for _, r := range rules {
+		if err := ensureIptablesRuleFirst(r); err != nil {
+			return fmt.Errorf("FORWARD: %v", err)
+		}
+	}
+	return nil
+}
+
+func applyNATRule(upstreamIface string) error {
+	return ensureIptablesRuleFirst([]string{"-t", "nat", "POSTROUTING", "-o", upstreamIface, "-j", "MASQUERADE"})
+}
+
+func verifyForwardRules(apIface, upstreamIface string) error {
+	rules := [][]string{
+		{"FORWARD", "-i", apIface, "-o", upstreamIface, "-j", "ACCEPT"},
+		{"FORWARD", "-i", upstreamIface, "-o", apIface, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"},
+	}
+	for _, r := range rules {
+		args := append([]string{"-C"}, r...)
+		if err := exec.Command("iptables", args...).Run(); err != nil {
+			return fmt.Errorf("iptables -C %s: %w", strings.Join(r, " "), err)
+		}
+	}
+	return nil
+}
+
+func verifyNATRule(upstreamIface string) error {
+	r := []string{"-t", "nat", "POSTROUTING", "-o", upstreamIface, "-j", "MASQUERADE"}
+	args := append([]string{"-C"}, r...)
+	if err := exec.Command("iptables", args...).Run(); err != nil {
+		return fmt.Errorf("iptables -C %s: %w", strings.Join(r, " "), err)
+	}
+	return nil
+}
+
+func validateDNSConfig() bool {
+	if dnsmasqExtraPath == "" {
+		return false
+	}
+	content, err := os.ReadFile(dnsmasqExtraPath)
+	if err != nil {
+		return true
+	}
+	if strings.Contains(string(content), "address=/#/") && !strings.Contains(string(content), "server=") {
+		return false
+	}
+	return true
+}
+
+func testEndToEnd(apIface, upstreamIface string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+
+	resolver := &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			d := net.Dialer{Timeout: 5 * time.Second}
+			return d.DialContext(ctx, network, "10.0.0.1:53")
+		},
+	}
+	addrs, err := resolver.LookupHost(ctx, "example.com")
+	if err != nil || len(addrs) == 0 {
+		fallback := &net.Resolver{PreferGo: true}
+		if fbAddrs, fbErr := fallback.LookupHost(ctx, "example.com"); fbErr == nil && len(fbAddrs) > 0 {
+			checkInfo("DNS Test", "System DNS works")
+			return nil
+		}
+		return fmt.Errorf("DNS via dnsmasq failed: %w", err)
+	}
+	checkInfo("DNS Test", fmt.Sprintf("dnsmasq resolved example.com → %s", addrs[0]))
+
+	if _, err := exec.LookPath("curl"); err == nil {
+		for _, target := range []string{"http://example.com", "http://1.1.1.1"} {
+			cmd := exec.Command("curl", "-s", "-o", "/dev/null", "--connect-timeout", "8", "--interface", upstreamIface, target)
+			if cmd.Run() == nil {
+				return nil
+			}
+		}
+		return fmt.Errorf("HTTP via %s failed", upstreamIface)
+	}
+	return nil
+}
+
+func configureInternetSharing(apIface, upstreamIface string) error {
+	fmt.Printf("\n%s═══ Internet Sharing Diagnostics ═══%s\n\n", utils.Purple, utils.Reset)
+	report := func(step, status, msg string) {
+		if status == "PASS" {
+			checkPass(step, msg)
+		} else {
+			checkFail(step, msg)
+		}
 	}
 
-	if err := ensureIptablesRuleFirst([]string{"-t", "nat", "POSTROUTING", "-o", upstreamIface, "-j", "MASQUERADE"}); err != nil {
-		return fmt.Errorf("failed NAT rule: %w", err)
+	if upstreamIface == "" {
+		var err error
+		upstreamIface, err = detectInternetInterface(apIface)
+		if err != nil || upstreamIface == "" || upstreamIface == apIface {
+			selectedIface, selectErr := promptUpstreamInterface(apIface, upstreamIface, err)
+			if selectErr != nil {
+				report("Upstream Interface", "FAIL", selectErr.Error())
+				return selectErr
+			}
+			upstreamIface = selectedIface
+		}
 	}
-	if err := ensureIptablesRuleFirst([]string{"FORWARD", "-i", apIface, "-o", upstreamIface, "-j", "ACCEPT"}); err != nil {
-		return fmt.Errorf("failed forward rule AP->WAN: %w", err)
+	internetInterface = upstreamIface
+	report("Upstream Interface", "PASS", fmt.Sprintf("Detected: %s", upstreamIface))
+
+	if err := verifyInterfaceHasInternet(upstreamIface); err != nil {
+		report("Internet Access", "FAIL", err.Error())
+		return fmt.Errorf("upstream %s has no internet", upstreamIface)
 	}
-	if err := ensureIptablesRuleFirst([]string{"FORWARD", "-i", upstreamIface, "-o", apIface, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"}); err != nil {
-		return fmt.Errorf("failed forward rule WAN->AP: %w", err)
+	report("Internet Access", "PASS", fmt.Sprintf("%s has internet", upstreamIface))
+
+	if err := enableIPForward(); err != nil {
+		report("IP Forwarding", "FAIL", err.Error())
+		return fmt.Errorf("ip_forward: %w", err)
+	}
+	report("IP Forwarding", "PASS", "net.ipv4.ip_forward = 1")
+
+	fw := detectFirewallBackend()
+	checkInfo("Firewall Backend", fw)
+
+	if strings.Contains(fw, "nftables") {
+		checkInfo("nftables", "Adding rules via nft")
+		ensureNFTablesForward(apIface, upstreamIface)
 	}
 
+	if err := applyForwardRules(apIface, upstreamIface); err != nil {
+		report("FORWARD Rules", "FAIL", err.Error())
+		return fmt.Errorf("forward: %w", err)
+	}
+	if err := verifyForwardRules(apIface, upstreamIface); err != nil {
+		report("FORWARD Rules", "FAIL", err.Error())
+		return fmt.Errorf("forward verify: %w", err)
+	}
+	report("FORWARD Rules", "PASS", "AP ↔ Internet allowed")
+
+	if err := applyNATRule(upstreamIface); err != nil {
+		report("NAT (Masquerade)", "FAIL", err.Error())
+		return fmt.Errorf("nat: %w", err)
+	}
+	if err := verifyNATRule(upstreamIface); err != nil {
+		report("NAT (Masquerade)", "FAIL", err.Error())
+		return fmt.Errorf("nat verify: %w", err)
+	}
+	report("NAT (Masquerade)", "PASS", "Traffic masqueraded via "+upstreamIface)
+
+	if !validateDNSConfig() {
+		report("DNS Configuration", "WARN", "Captive portal DNS active")
+	} else {
+		checkInfo("DNS Configuration", "Upstream DNS configured")
+	}
+
+	if err := testEndToEnd(apIface, upstreamIface); err != nil {
+		report("Connectivity Test", "FAIL", err.Error())
+		fmt.Printf("\n%s[!] Internet Sharing NOT ENABLED%s\n", utils.Red, utils.Reset)
+		return fmt.Errorf("end-to-end: %w", err)
+	}
+	report("Connectivity Test", "PASS", "Clients can reach the internet")
+
+	fmt.Printf("\n%s[✓] Internet Sharing Enabled%s\n", utils.Green, utils.Reset)
 	natConfigured = true
-	fmt.Printf("%s[*] Internet uplink detected: %s%s\n", utils.Yellow, upstreamIface, utils.Reset)
 	return nil
 }
 
@@ -2980,7 +3374,7 @@ func isIgnoredUpstreamInterface(name string) bool {
 }
 
 func cleanupInternetSharing(apIface, upstreamIface string) {
-	if !natConfigured || apIface == "" || upstreamIface == "" {
+	if apIface == "" || upstreamIface == "" {
 		natConfigured = false
 		return
 	}
@@ -2988,6 +3382,8 @@ func cleanupInternetSharing(apIface, upstreamIface string) {
 	deleteIptablesRule([]string{"FORWARD", "-i", upstreamIface, "-o", apIface, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"})
 	deleteIptablesRule([]string{"FORWARD", "-i", apIface, "-o", upstreamIface, "-j", "ACCEPT"})
 	deleteIptablesRule([]string{"-t", "nat", "POSTROUTING", "-o", upstreamIface, "-j", "MASQUERADE"})
+
+	cleanupNFTablesForward(apIface, upstreamIface)
 	natConfigured = false
 }
 
