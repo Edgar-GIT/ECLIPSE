@@ -88,15 +88,15 @@ func Run() {
 			fmt.Printf("  %s   Sessions captured: %d%s\n\n", utils.Yellow, cnt, utils.Reset)
 		}
 		fmt.Printf("%s[1] - Start Attack (whatmeow)%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[8] - Start Attack (Chrome)%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[2] - Start Attack (Chrome)%s\n", utils.Green, utils.Reset)
 		if running {
-			fmt.Printf("%s[2] - Stop Server%s\n", utils.Red, utils.Reset)
+			fmt.Printf("%s[3] - Stop Server%s\n", utils.Red, utils.Reset)
 		}
-		fmt.Printf("%s[3] - List Sessions%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[4] - Replay Session%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[5] - Clear Sessions%s\n", utils.Yellow, utils.Reset)
-		fmt.Printf("%s[6] - Setup Reference Profile%s\n", utils.Blue, utils.Reset)
-		utils.PrintReturnOption("7")
+		fmt.Printf("%s[4] - List Sessions%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[5] - Replay Session%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[6] - Clear Sessions%s\n", utils.Yellow, utils.Reset)
+		fmt.Printf("%s[7] - Setup Reference Profile%s\n", utils.Blue, utils.Reset)
+		utils.PrintReturnOption("8")
 
 		fmt.Printf("\n%sOption: %s", utils.Green, utils.Reset)
 		input, _ := reader.ReadString('\n')
@@ -106,28 +106,28 @@ func Run() {
 		case "1":
 			doAttack(reader)
 		case "2":
+			doChromeAttack(reader)
+		case "3":
 			if running {
 				stopServer()
 			} else {
 				fmt.Printf("%sInvalid option!%s\n", utils.Yellow, utils.Reset)
 				utils.WaitForEnter(reader)
 			}
-		case "3":
+		case "4":
 			listSessions()
 			utils.WaitForEnter(reader)
-		case "4":
-			doReplay(reader)
 		case "5":
-			clearSessions(reader)
+			doReplay(reader)
 		case "6":
-			doSetupReference(reader)
+			clearSessions(reader)
 		case "7":
+			doSetupReference(reader)
+		case "8":
 			if running {
 				stopServer()
 			}
 			return
-		case "8":
-			doChromeAttack(reader)
 		default:
 			fmt.Printf("%sInvalid option!%s\n", utils.Yellow, utils.Reset)
 			utils.WaitForEnter(reader)

