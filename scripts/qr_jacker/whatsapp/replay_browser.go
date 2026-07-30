@@ -5,11 +5,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 
 	"github.com/chromedp/chromedp"
 )
+
+func ensureXDisplay() {
+	if d := os.Getenv("DISPLAY"); d != "" {
+		exec.Command("xauth", "generate", d, ".", "trusted").Run()
+	}
+}
 
 func DiscoverReferenceProfile(outDir string) error {
 	if err := os.MkdirAll(outDir, 0755); err != nil {
@@ -21,9 +28,13 @@ func DiscoverReferenceProfile(outDir string) error {
 	}
 	defer os.RemoveAll(userDir)
 
+	ensureXDisplay()
+
 	opts := []chromedp.ExecAllocatorOption{
 		chromedp.NoSandbox,
 		chromedp.Flag("disable-gpu", true),
+		chromedp.Flag("ozone-platform", "wayland"),
+		chromedp.Env("DISPLAY="),
 		chromedp.NoFirstRun,
 		chromedp.NoDefaultBrowserCheck,
 		chromedp.UserDataDir(userDir),
@@ -114,12 +125,18 @@ func ReplayInBrowser(sd *sessionData) error {
 	}
 	defer os.RemoveAll(userDir)
 
-	opts := append(chromedp.DefaultExecAllocatorOptions[:],
-		chromedp.Flag("headless", false),
-		chromedp.Flag("ozone-platform-hint", "wayland"),
-		chromedp.UserDataDir(userDir), chromedp.NoFirstRun,
-		chromedp.NoDefaultBrowserCheck, chromedp.WindowSize(1280, 900),
-	)
+	ensureXDisplay()
+
+	opts := []chromedp.ExecAllocatorOption{
+		chromedp.NoSandbox,
+		chromedp.Flag("disable-gpu", true),
+		chromedp.Flag("ozone-platform", "wayland"),
+		chromedp.Env("DISPLAY="),
+		chromedp.NoFirstRun,
+		chromedp.NoDefaultBrowserCheck,
+		chromedp.UserDataDir(userDir),
+		chromedp.WindowSize(1280, 900),
+	}
 	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), opts...)
 	defer allocCancel()
 
