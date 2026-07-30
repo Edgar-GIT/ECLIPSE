@@ -850,14 +850,14 @@ func doReplay(reader *bufio.Reader) {
 		return
 	}
 
-	// Check if reference profile exists
+	// Check if reference profile exists (optional, helps debug schema)
 	refDir := "scripts/qr_jacker/whatsapp/reference"
 	postPairingFile := filepath.Join(refDir, "post_pairing.json")
 	if _, err := os.Stat(postPairingFile); os.IsNotExist(err) {
-		fmt.Printf("\n%s[!] Reference profile not found!%s\n", utils.Yellow, utils.Reset)
-		fmt.Println("  Run 'Setup Reference Profile' (option 6) first.")
+		fmt.Printf("\n%s[!] Reference profile not found.%s\n", utils.Yellow, utils.Reset)
+		fmt.Println("  Replay will use runtime pattern matching.")
+		fmt.Println("  Run 'Setup Reference Profile' (option 6) for debug dumps.")
 		utils.WaitForEnter(reader)
-		return
 	}
 
 	fmt.Printf("\n%s[*] Injecting session into Chromium with web.whatsapp.com...%s\n", utils.Yellow, utils.Reset)

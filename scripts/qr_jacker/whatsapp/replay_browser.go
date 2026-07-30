@@ -41,17 +41,21 @@ func DiscoverReferenceProfile(outDir string) error {
 	fmt.Println("  Chromium opened. Scan QR with your phone.")
 	fmt.Println("============================================")
 
+	// Wait for QR canvas to appear before dumping
+	if err := chromedp.Run(ctx, chromedp.WaitVisible("canvas", chromedp.ByQuery)); err != nil {
+		return fmt.Errorf("wait QR: %w", err)
+	}
+	time.Sleep(2 * time.Second)
 	dumpDB(ctx, filepath.Join(outDir, "pre_pairing.json"))
 
 	fmt.Println("\n[*] Waiting for pairing (up to 2 min)...")
 	pc, pcCancel := context.WithTimeout(ctx, 120*time.Second)
-	if err := chromedp.Run(pc, chromedp.WaitVisible("#app .two", chromedp.ByQuery)); err != nil {
+	defer pcCancel()
+	if err := chromedp.Run(pc, chromedp.WaitNotPresent("canvas", chromedp.ByQuery)); err != nil {
 		fmt.Println("[!] Timed out. Make sure you scanned the QR code.")
-		pcCancel()
 		return nil
 	}
-	pcCancel()
-	time.Sleep(5 * time.Second)
+	time.Sleep(3 * time.Second)
 
 	dumpDB(ctx, filepath.Join(outDir, "post_pairing.json"))
 	fmt.Printf("\n[+] Saved to %s\n", outDir)
@@ -119,11 +123,25 @@ func ReplayInBrowser(sd *sessionData) error {
 	if err := chromedp.Run(ctx, chromedp.Navigate("https://web.whatsapp.com")); err != nil {
 		return err
 	}
-	time.Sleep(4 * time.Second)
+	// Wait for the page to render QR (means IndexedDB is initialized with keys)
+	if err := chromedp.Run(ctx, chromedp.WaitVisible("canvas", chromedp.ByQuery)); err != nil {
+		return fmt.Errorf("wait QR: %w", err)
+	}
+	time.Sleep(2 * time.Second)
 
 	var dump string
 	if err := chromedp.Run(ctx, chromedp.Evaluate(jsDump, &dump)); err != nil {
 		return fmt.Errorf("dump: %w", err)
+	}
+
+	// Save debug dump
+	if f, err := os.Create(filepath.Join(os.TempDir(), "whatsapp_dump.json")); err == nil {
+		var v interface{}
+		json.Unmarshal([]byte(dump), &v)
+		d, _ := json.MarshalIndent(v, "", "  ")
+		f.Write(d)
+		f.Close()
+		fmt.Printf("[*] Debug dump saved to /tmp/whatsapp_dump.json\n")
 	}
 
 	injectJS := genInjectJS(dump, sd)
@@ -142,139 +160,50 @@ func ReplayInBrowser(sd *sessionData) error {
 	return nil
 }
 
-func genInjectJS(dumpJSON string, sd *sessionData) string {
-	type entry struct {
-		dbName, storeName string
-		keyIdx            int // index into the store's entries array
-		kind              string // "noise", "identity", "spkey", "regid", "adv"
-	}
+func genInjectJS(_ string, sd *sessionData) string {
+	noise := fmt.Sprintf("{pub:new Uint8Array(%s),priv:new Uint8Array(%s)}", bjs(sd.NoisePub), bjs(sd.NoisePriv))
+	identity := fmt.Sprintf("{pub:new Uint8Array(%s),priv:new Uint8Array(%s)}", bjs(sd.IdentityPub), bjs(sd.IdentityPriv))
+	sp := fmt.Sprintf("{keyId:%d,pub:new Uint8Array(%s),priv:new Uint8Array(%s),signature:new Uint8Array(%s)}", sd.SignedPreKeyID, bjs(sd.SignedPrePub), bjs(sd.SignedPrePriv), bjs(sd.SignedPreSig))
+	rid := fmt.Sprintf("%d", sd.RegistrationID)
+	adv := fmt.Sprintf("new Uint8Array(%s)", bjs(sd.AdvSecretKey))
 
-	var dbs []struct {
-		Name   string `json:"name"`
-		Stores []struct {
-			Name    string `json:"name"`
-			Entries []struct {
-				K interface{} `json:"k"`
-				V interface{} `json:"v"`
-			} `json:"entries"`
-		} `json:"stores"`
-	}
-	if err := json.Unmarshal([]byte(dumpJSON), &dbs); err != nil {
-		return `"dump parse error: ` + err.Error() + `"`
-	}
-
-	var matches []entry
-	var noiseCount int
-
-	for _, db := range dbs {
-		for _, st := range db.Stores {
-			for i, en := range st.Entries {
-				vmap, ok := en.V.(map[string]interface{})
-				if !ok {
-					continue
-				}
-				// Check for NoiseKey/IdentityKey: object with pub+priv (both 32-byte buffers)
-				pub, hasPub := vmap["pub"]
-				priv, hasPriv := vmap["priv"]
-				if hasPub && hasPriv {
-					pubM, pubOk := pub.(map[string]interface{})
-					privM, privOk := priv.(map[string]interface{})
-					if pubOk && privOk && hasBuf32(pubM) && hasBuf32(privM) {
-						noiseCount++
-						kind := "noise"
-						if noiseCount == 2 {
-							kind = "identity"
-						}
-						matches = append(matches, entry{
-							dbName: db.Name, storeName: st.Name, keyIdx: i, kind: kind,
-						})
-					}
-				}
-				// Check for SignedPreKey: object with keyId, pub, priv, signature
-				if _, hasKID := vmap["keyId"]; hasKID {
-					_, hasSig := vmap["signature"]
-					_, hasPP := vmap["pub"]
-					_, hasPr := vmap["priv"]
-					if hasSig && hasPP && hasPr {
-						matches = append(matches, entry{
-							dbName: db.Name, storeName: st.Name, keyIdx: i, kind: "spkey",
-						})
-					}
-				}
-				// Check for bu32fer (AdvSecretKey)
-				if hasBuf32(vmap) {
-					matches = append(matches, entry{
-						dbName: db.Name, storeName: st.Name, keyIdx: i, kind: "adv",
-					})
-				}
-			}
-		}
-	}
-
-	// Build JavaScript injection
-	if len(matches) == 0 {
-		return `"no key entries found in IndexedDB"`
-	}
-
-	js := "(async()=>{\n"
-	js += "const k={noise:{pub:new Uint8Array(" + bjs(sd.NoisePub) + "),priv:new Uint8Array(" + bjs(sd.NoisePriv) + ")},"
-	js += "id:{pub:new Uint8Array(" + bjs(sd.IdentityPub) + "),priv:new Uint8Array(" + bjs(sd.IdentityPriv) + ")},"
-	js += "sp:{keyId:" + fmt.Sprintf("%d", sd.SignedPreKeyID) + ",pub:new Uint8Array(" + bjs(sd.SignedPrePub) + "),priv:new Uint8Array(" + bjs(sd.SignedPrePriv) + "),signature:new Uint8Array(" + bjs(sd.SignedPreSig) + ")},"
-	js += "rid:" + fmt.Sprintf("%d", sd.RegistrationID) + ","
-	js += "adv:new Uint8Array(" + bjs(sd.AdvSecretKey) + ")};\n"
-
-	// Group by db/store for efficient transactions
-	type byStore struct {
-		db, store string
-		entries   []entry
-	}
-	groups := make(map[string]*byStore)
-	for _, m := range matches {
-		key := m.dbName + "|" + m.storeName
-		if _, ok := groups[key]; !ok {
-			groups[key] = &byStore{db: m.dbName, store: m.storeName}
-		}
-		groups[key].entries = append(groups[key].entries, m)
-	}
-
-	for _, g := range groups {
-		js += "{const db=await new Promise((res,rej)=>{const r=indexedDB.open(" + jsonQuote(g.db) + ");r.onsuccess=e=>res(e.target.result);r.onerror=e=>rej(e.target.error)});"
-		js += "const tx=db.transaction(" + jsonQuote(g.store) + ",'readwrite');const st=tx.objectStore(" + jsonQuote(g.store) + ");"
-
-		// Get all keys
-		js += "const keys=await new Promise((res,rej)=>{const r=st.getAllKeys();r.onsuccess=e=>res(e.target.result);r.onerror=e=>rej(e.target.error)});\n"
-
-		for _, m := range g.entries {
-			var valJS string
-			switch m.kind {
-			case "noise":
-				valJS = "k.noise"
-			case "identity":
-				valJS = "k.id"
-			case "spkey":
-				valJS = "k.sp"
-			case "regid":
-				valJS = "k.rid"
-			case "adv":
-				valJS = "k.adv"
-			}
-			js += "st.put(" + valJS + ",keys[" + fmt.Sprintf("%d", m.keyIdx) + "]);\n"
-		}
-		js += "await new Promise((res,rej)=>{tx.oncomplete=res;tx.onerror=rej});db.close()}\n"
-	}
-
-	js += `return "OK: ` + fmt.Sprintf("%d", len(matches)) + ` keys replaced"})()`
-
-	return js
+	return fmt.Sprintf(`(async()=>{
+const N=%s,I=%s,S=%s,R=%s,A=%s;
+const dbs=await indexedDB.databases();let r=0;
+let nDone=false,rDone=false;
+for(const i of dbs){
+  const db=await new Promise((res,rej)=>{const r=indexedDB.open(i.name);r.onsuccess=e=>res(e.target.result);r.onerror=e=>rej(e.target.error)});
+  for(const sn of db.objectStoreNames){
+    const tx=db.transaction(sn,'readwrite'),st=tx.objectStore(sn);
+    await new Promise((res,rej)=>{
+      const c=st.openCursor();
+      c.onsuccess=e=>{
+        const cur=e.target.result;
+        if(!cur){res();return;}
+        const v=cur.value;
+        if(v&&typeof v==='object'){
+          const hp=v.pub instanceof Uint8Array&&v.pub.length===32;
+          const hr=v.priv instanceof Uint8Array&&v.priv.length===32;
+          if(hp&&hr){
+            if(!nDone){cur.update(N);nDone=true;}else cur.update(I);
+            r++;
+          }else if(typeof v.keyId==='number'&&hp&&hr&&v.signature instanceof Uint8Array&&v.signature.length){
+            cur.update(S);r++;
+          }else if(v instanceof Uint8Array&&v.length===32){
+            cur.update(A);r++;
+          }
+        }else if(!rDone&&typeof v==='number'&&Number.isInteger(v)&&v>=0&&v<4294967296){
+          cur.update(R);rDone=true;r++;
+        }
+        cur.continue();
+      };
+      c.onerror=e=>rej(e.target.error);
+    });
+  }
+  db.close();
 }
-
-func hasBuf32(m map[string]interface{}) bool {
-	b, ok := m["_b"]
-	if !ok {
-		return false
-	}
-	arr, ok := b.([]interface{})
-	return ok && len(arr) == 32
+return "OK: "+r+" keys replaced";
+})()`, noise, identity, sp, rid, adv)
 }
 
 func bjs(b []byte) string {
@@ -289,9 +218,4 @@ func bjs(b []byte) string {
 		s += fmt.Sprintf("%d", v)
 	}
 	return s + "]"
-}
-
-func jsonQuote(s string) string {
-	b, _ := json.Marshal(s)
-	return string(b)
 }
