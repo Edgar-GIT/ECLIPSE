@@ -569,7 +569,6 @@ func launchAttack(cfg attackCfg) {
 	} else {
 		fmt.Printf("\n%s[!] No session captured within timeout.%s\n", utils.Yellow, utils.Reset)
 
-		// ── Final diagnostics ──
 		var diagOut string
 		chromedp.Run(tabCtx, chromedp.Evaluate(`JSON.stringify(window.__diag)`, &diagOut))
 		fmt.Printf("\n%s========== FINAL DIAGNOSTICS (TIMEOUT) ==========%s\n", utils.Blue, utils.Reset)
