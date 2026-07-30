@@ -434,21 +434,23 @@ func findChrome() string {
 }
 
 func startChrome(binary, userDir string) (context.Context, context.CancelFunc, error) {
-	opts := append(chromedp.DefaultExecAllocatorOptions[:],
+	opts := []chromedp.ExecAllocatorOption{
+		chromedp.NoSandbox,
 		chromedp.Flag("headless", "new"),
+		chromedp.Flag("disable-dev-shm-usage", true),
+		chromedp.Flag("no-first-run", true),
+		chromedp.Flag("disable-extensions", true),
+		chromedp.Flag("hide-scrollbars", true),
+		chromedp.Flag("mute-audio", true),
 		chromedp.Flag("disable-blink-features", "AutomationControlled,StorageBuckets"),
 		chromedp.Flag("disable-background-timer-throttling", true),
 		chromedp.Flag("disable-renderer-backgrounding", true),
-		chromedp.Flag("disable-background-networking", false),
-		chromedp.Flag("disable-features", "StorageBuckets"),
-		chromedp.Flag("enable-automation", false),
-		chromedp.Flag("unlimited-storage", true),
-		chromedp.Flag("disable-storage-reset", true),
+		chromedp.Flag("disable-backgrounding-occluded-windows", true),
 		chromedp.Flag("lang", "en"),
 		chromedp.WindowSize(1920, 1080),
 		chromedp.UserAgent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"),
 		chromedp.UserDataDir(userDir),
-	)
+	}
 	if binary != "" {
 		opts = append(opts, chromedp.ExecPath(binary))
 	}
