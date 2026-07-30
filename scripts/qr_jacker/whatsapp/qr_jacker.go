@@ -221,10 +221,8 @@ func launchAttack(cfg attackCfg) {
 	tabCtx, tabCancel := chromedp.NewContext(allocCtx)
 	defer tabCancel()
 
-	// ── Enable CDP domains ──
 	chromedp.Run(tabCtx, network.Enable())
 
-	// ── Diagnostic event counters ──
 	var (
 		consoleErrors    []string
 		jsExceptions     []string
@@ -248,7 +246,6 @@ func launchAttack(cfg attackCfg) {
 
 	chromedp.ListenTarget(tabCtx, func(ev interface{}) {
 		switch e := ev.(type) {
-		// ── Console API calls ──
 		case *runtime.EventConsoleAPICalled:
 			var args []string
 			for _, a := range e.Args {
@@ -265,11 +262,9 @@ func launchAttack(cfg attackCfg) {
 				diagMu.Unlock()
 			}
 			if e.Type == "error" || e.Type == "warning" || e.Type == "info" {
-				// print only first occurrence of each type to reduce noise
 				diagLog(fmt.Sprintf("CONSOLE-%s", e.Type), strings.Join(args, " "))
 			}
 
-		// ── JS exceptions ──
 		case *runtime.EventExceptionThrown:
 			if e.ExceptionDetails != nil {
 				text := e.ExceptionDetails.Error()
@@ -279,7 +274,6 @@ func launchAttack(cfg attackCfg) {
 				diagLog("EXCEPTION", text)
 			}
 
-		// ── WebSocket events ──
 		case *network.EventWebSocketCreated:
 			info := fmt.Sprintf("url=%s requestId=%s", e.URL, e.RequestID)
 			diagMu.Lock()
@@ -323,7 +317,6 @@ func launchAttack(cfg attackCfg) {
 			diagMu.Unlock()
 			diagLog("WS-CLOSED", info)
 
-		// ── Network failures ──
 		case *network.EventLoadingFailed:
 			url := requestURLs[e.RequestID]
 			fail := fmt.Sprintf("requestId=%s url=%s type=%s error=%s blockedReason=%s canceled=%v", e.RequestID, url, e.Type, e.ErrorText, e.BlockedReason, e.Canceled)
@@ -340,21 +333,35 @@ func launchAttack(cfg attackCfg) {
 		}
 	})
 
-	// ── Inject JS error interceptors (runs before ANY page JS) ──
 	chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		_, err := page.AddScriptToEvaluateOnNewDocument(`
-		window.__diag = {
-			onerror: [],
-			unhandled: [],
-			idbErrors: [],
-			sbErrors: []
-		};
+		window.__diag = { onerror: [], unhandled: [], idbErrors: [], sbErrors: [] };
 		window.onerror = function(msg, src, line, col, err) {
 			window.__diag.onerror.push({msg:msg, src:src, line:line, col:col, stack:err && err.stack});
 		};
 		window.addEventListener('unhandledrejection', function(e) {
 			window.__diag.unhandled.push({reason:String(e.reason), stack:e.reason && e.reason.stack});
 		});
+		try {
+			if (navigator.storage) {
+				navigator.storage.persist = function() { return Promise.resolve(true); };
+			}
+			navigator.storageBuckets = {
+				open: function(name, opts) {
+					var bucket = {
+						name: name,
+						persisted: opts && opts.persisted ? true : false,
+						persist: function() { return Promise.resolve(true); },
+						persisted: function() { return Promise.resolve(this.persisted); },
+						estimate: function() { return Promise.resolve({quota: 10*1024*1024, usage: 0}); }
+					};
+					return Promise.resolve(bucket);
+				},
+				keys: function() { return Promise.resolve([]); }
+			};
+		} catch(e) {
+			window.__diag.sbErrors.push(String(e));
+		}
 		`).Do(ctx)
 		return err
 	}))
