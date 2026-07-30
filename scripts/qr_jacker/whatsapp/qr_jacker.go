@@ -325,7 +325,6 @@ func launchAttack(cfg attackCfg) {
 			diagMu.Unlock()
 			diagLog("NET-FAIL", fail)
 
-		// ── Track request URLs ──
 		case *network.EventRequestWillBeSent:
 			diagMu.Lock()
 			requestURLs[e.RequestID] = e.Request.URL
@@ -366,7 +365,6 @@ func launchAttack(cfg attackCfg) {
 		return err
 	}))
 
-	// ── Navigate ──
 	if err := chromedp.Run(tabCtx, chromedp.Navigate("https://web.whatsapp.com")); err != nil {
 		fmt.Printf("%s[!] Navigation failed: %v%s\n", utils.Red, err, utils.Reset)
 		utils.PauseForInput()
