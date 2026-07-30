@@ -19,6 +19,7 @@ import (
 	"programa/scripts/pcutilities"
 	"programa/scripts/phone"
 	"programa/scripts/portscanner"
+	"programa/scripts/qr_jacker/whatsapp"
 	"programa/scripts/ransomware"
 	"programa/scripts/zphisher"
 	"programa/utils"
@@ -235,9 +236,7 @@ func main() {
 			fmt.Printf("\n%sPress Enter to continue...%s", utils.Green, utils.Reset)
 			reader.ReadString('\n')
 		case "18":
-			fmt.Printf("%sInvalid option!%s\n", utils.Yellow, utils.Reset)
-			fmt.Printf("\n%sPress Enter to continue...%s", utils.Green, utils.Reset)
-			reader.ReadString('\n')
+			whatsapp.Run()
 		case "19":
 			fmt.Printf("%sInvalid option!%s\n", utils.Yellow, utils.Reset)
 			fmt.Printf("\n%sPress Enter to continue...%s", utils.Green, utils.Reset)
