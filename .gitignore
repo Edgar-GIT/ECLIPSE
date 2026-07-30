@@ -31,3 +31,6 @@ osint_tools/
 exec_tools/
 .aider*
 .codex
+
+# QR Jacker debug images
+scripts/qr_jacker/whatsapp/www/debug_*.png
