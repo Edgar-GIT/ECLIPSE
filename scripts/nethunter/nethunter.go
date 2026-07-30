@@ -361,12 +361,9 @@ func createFakeLAN() {
 
 	var ssid string
 	for {
-		fmt.Printf("%sSSID (default: EDGAR): %s", utils.Green, utils.Reset)
+		fmt.Printf("%sSSID: %s", utils.Green, utils.Reset)
 		input, _ := reader.ReadString('\n')
 		input = strings.TrimSpace(input)
-		if input == "" {
-			input = "EDGAR"
-		}
 		valid, errMsg := validateSSID(input)
 		if !valid {
 			fmt.Printf("%s[!] Invalid SSID: %s%s\n", utils.Red, errMsg, utils.Reset)
