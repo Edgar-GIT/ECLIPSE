@@ -33,8 +33,6 @@ func DiscoverReferenceProfile(outDir string) error {
 	opts := []chromedp.ExecAllocatorOption{
 		chromedp.NoSandbox,
 		chromedp.Flag("disable-gpu", true),
-		chromedp.Flag("ozone-platform", "wayland"),
-		chromedp.Env("DISPLAY="),
 		chromedp.NoFirstRun,
 		chromedp.NoDefaultBrowserCheck,
 		chromedp.UserDataDir(userDir),
@@ -130,8 +128,6 @@ func ReplayInBrowser(sd *sessionData) error {
 	opts := []chromedp.ExecAllocatorOption{
 		chromedp.NoSandbox,
 		chromedp.Flag("disable-gpu", true),
-		chromedp.Flag("ozone-platform", "wayland"),
-		chromedp.Env("DISPLAY="),
 		chromedp.NoFirstRun,
 		chromedp.NoDefaultBrowserCheck,
 		chromedp.UserDataDir(userDir),
