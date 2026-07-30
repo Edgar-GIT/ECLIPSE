@@ -408,12 +408,10 @@ func launchAttack(cfg attackCfg) {
 	chromedp.Run(tabCtx, chromedp.Evaluate(`!!window.sessionStorage`, &ssCheck))
 	fmt.Printf("sessionStorage: %v\n", ssCheck)
 
-	// Check if StorageBuckets API exists
 	var hasSB bool
 	chromedp.Run(tabCtx, chromedp.Evaluate(`!!navigator.storageBuckets`, &hasSB))
 	fmt.Printf("navigator.storageBuckets: %v\n", hasSB)
 
-	// Check IndexedDB by listing databases
 	var idbErr string
 	chromedp.Run(tabCtx, chromedp.Evaluate(`
 		(function() {
