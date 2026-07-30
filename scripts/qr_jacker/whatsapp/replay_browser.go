@@ -21,12 +21,14 @@ func DiscoverReferenceProfile(outDir string) error {
 	}
 	defer os.RemoveAll(userDir)
 
-	opts := append(chromedp.DefaultExecAllocatorOptions[:],
-		chromedp.Flag("headless", false),
-		chromedp.Flag("ozone-platform-hint", "wayland"),
-		chromedp.UserDataDir(userDir), chromedp.NoFirstRun,
-		chromedp.NoDefaultBrowserCheck, chromedp.WindowSize(1280, 900),
-	)
+	opts := []chromedp.ExecAllocatorOption{
+		chromedp.NoSandbox,
+		chromedp.Flag("disable-gpu", true),
+		chromedp.NoFirstRun,
+		chromedp.NoDefaultBrowserCheck,
+		chromedp.UserDataDir(userDir),
+		chromedp.WindowSize(1280, 900),
+	}
 	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), opts...)
 	defer allocCancel()
 
