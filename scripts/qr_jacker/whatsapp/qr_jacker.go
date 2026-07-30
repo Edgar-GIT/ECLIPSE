@@ -422,13 +422,11 @@ func launchAttack(cfg attackCfg) {
 	`, &idbErr))
 	fmt.Printf("IndexedDB.databases: %s\n", idbErr)
 
-	// Wait a moment then dump IDB result
 	time.Sleep(3 * time.Second)
 	var idbDbs string
 	chromedp.Run(tabCtx, chromedp.Evaluate(`JSON.stringify(window.__idbDbs)`, &idbDbs))
 	fmt.Printf("IndexedDB databases: %s\n", idbDbs)
 
-	// ── Check critical APIs ──
 	var cryptoSubtle, cryptoGetRandom, storagePersist, storageEstimate bool
 	chromedp.Run(tabCtx, chromedp.Evaluate(`!!(window.crypto && window.crypto.subtle)`, &cryptoSubtle))
 	chromedp.Run(tabCtx, chromedp.Evaluate(`!!(window.crypto && window.crypto.getRandomValues)`, &cryptoGetRandom))
@@ -437,7 +435,6 @@ func launchAttack(cfg attackCfg) {
 	fmt.Printf("crypto.subtle: %v | getRandomValues: %v | storage.persist: %v | storage.estimate: %v\n",
 		cryptoSubtle, cryptoGetRandom, storagePersist, storageEstimate)
 
-	// Collect WebSocket stats
 	diagMu.Lock()
 	fmt.Printf("\nWebSocket connections created: %d\n", len(wsCreated))
 	for _, w := range wsCreated {
