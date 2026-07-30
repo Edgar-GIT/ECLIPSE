@@ -146,6 +146,8 @@ func linuxOpenAttempts(localPath, fileURL string) []commandAttempt {
 
 func linuxBrowserAttempts(target string) []commandAttempt {
 	return []commandAttempt{
+		{"zen-browser", []string{"--new-tab", target}},
+		{"zen-browser", []string{target}},
 		{"firefox", []string{"--new-tab", target}},
 		{"firefox", []string{target}},
 		{"firefox-esr", []string{"--new-tab", target}},
