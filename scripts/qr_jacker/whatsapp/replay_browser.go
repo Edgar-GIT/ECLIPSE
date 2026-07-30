@@ -15,6 +15,7 @@ func startChrome(ctx context.Context, userDir string) (context.Context, context.
 	opts := []chromedp.ExecAllocatorOption{
 		chromedp.NoSandbox,
 		chromedp.Flag("disable-gpu", true),
+		chromedp.Flag("ozone-platform", "wayland"),
 		chromedp.NoFirstRun,
 		chromedp.NoDefaultBrowserCheck,
 		chromedp.UserDataDir(userDir),
