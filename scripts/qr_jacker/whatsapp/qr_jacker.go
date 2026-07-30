@@ -237,7 +237,6 @@ func launchAttack(cfg attackCfg) {
 		requestURLs      map[network.RequestID]string
 		lastReconnect    time.Time
 		reconnectCount   int
-		firstReconnect   time.Time
 		diagMu           sync.Mutex
 	)
 	requestURLs = make(map[network.RequestID]string)
@@ -285,6 +284,12 @@ func launchAttack(cfg attackCfg) {
 			info := fmt.Sprintf("url=%s requestId=%s", e.URL, e.RequestID)
 			diagMu.Lock()
 			wsCreated = append(wsCreated, info)
+			if !lastReconnect.IsZero() {
+				interval := time.Since(lastReconnect).Round(time.Second)
+				fmt.Printf("\n%s[WS-RECONNECT] after %s (count=%d)%s", utils.Yellow, interval, reconnectCount, utils.Reset)
+			}
+			lastReconnect = time.Now()
+			reconnectCount++
 			diagMu.Unlock()
 			diagLog("WS-CREATED", info)
 
@@ -332,20 +337,6 @@ func launchAttack(cfg attackCfg) {
 			diagMu.Lock()
 			requestURLs[e.RequestID] = e.Request.URL
 			diagMu.Unlock()
-
-		// ── WebSocket reconnect detection ──
-		case *network.EventWebSocketCreated:
-			if !lastReconnect.IsZero() {
-				interval := time.Since(lastReconnect).Round(time.Second)
-				diagLog("WS-RECONNECT", fmt.Sprintf("after %s (count=%d)", interval, reconnectCount))
-			}
-			diagMu.Lock()
-			if firstReconnect.IsZero() && len(wsCreated) > 0 {
-				firstReconnect = time.Now()
-			}
-			lastReconnect = time.Now()
-			reconnectCount++
-			diagMu.Unlock()
 		}
 	})
 
@@ -364,29 +355,6 @@ func launchAttack(cfg attackCfg) {
 		window.addEventListener('unhandledrejection', function(e) {
 			window.__diag.unhandled.push({reason:String(e.reason), stack:e.reason && e.reason.stack});
 		});
-		var origOpen = indexedDB.open;
-		indexedDB.open = function() {
-			var req = origOpen.apply(this, arguments);
-			req.addEventListener('error', function() {
-				window.__diag.idbErrors.push({name:req.result ? req.result.name : 'unknown', error:String(req.error)});
-			});
-			req.addEventListener('blocked', function() {
-				window.__diag.idbErrors.push({name:req.result ? req.result.name : 'unknown', error:'blocked'});
-			});
-			return req;
-		};
-		try { if (navigator.storageBuckets) {
-			var origSB = navigator.storageBuckets.open.bind(navigator.storageBuckets);
-			navigator.storageBuckets.open = function() {
-				var args = arguments;
-				var p = origSB.apply(navigator.storageBuckets, args);
-				p.then(function(){console.log('[DIAG] storageBucket opened:', args[0]);});
-				p.catch(function(err) {
-					window.__diag.sbErrors.push({name:String(args[0]), error:String(err)});
-				});
-				return p;
-			};
-		}} catch(e) {}
 		`).Do(ctx)
 		return err
 	}))
@@ -460,6 +428,15 @@ func launchAttack(cfg attackCfg) {
 	var idbDbs string
 	chromedp.Run(tabCtx, chromedp.Evaluate(`JSON.stringify(window.__idbDbs)`, &idbDbs))
 	fmt.Printf("IndexedDB databases: %s\n", idbDbs)
+
+	// ── Check critical APIs ──
+	var cryptoSubtle, cryptoGetRandom, storagePersist, storageEstimate bool
+	chromedp.Run(tabCtx, chromedp.Evaluate(`!!(window.crypto && window.crypto.subtle)`, &cryptoSubtle))
+	chromedp.Run(tabCtx, chromedp.Evaluate(`!!(window.crypto && window.crypto.getRandomValues)`, &cryptoGetRandom))
+	chromedp.Run(tabCtx, chromedp.Evaluate(`!!(navigator.storage && navigator.storage.persist)`, &storagePersist))
+	chromedp.Run(tabCtx, chromedp.Evaluate(`!!(navigator.storage && navigator.storage.estimate)`, &storageEstimate))
+	fmt.Printf("crypto.subtle: %v | getRandomValues: %v | storage.persist: %v | storage.estimate: %v\n",
+		cryptoSubtle, cryptoGetRandom, storagePersist, storageEstimate)
 
 	// Collect WebSocket stats
 	diagMu.Lock()
