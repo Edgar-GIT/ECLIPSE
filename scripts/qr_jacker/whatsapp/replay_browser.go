@@ -2,6 +2,7 @@ package whatsapp
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -217,16 +218,15 @@ func ReplayInBrowser(sd *sessionData) error {
 }
 
 func genInjectJS(_ string, sd *sessionData) string {
-	noise := fmt.Sprintf("{pub:new Uint8Array(%s),priv:new Uint8Array(%s)}", bjs(sd.NoisePub), bjs(sd.NoisePriv))
-	identity := fmt.Sprintf("{pub:new Uint8Array(%s),priv:new Uint8Array(%s)}", bjs(sd.IdentityPub), bjs(sd.IdentityPriv))
-	sp := fmt.Sprintf("{keyId:%d,pub:new Uint8Array(%s),priv:new Uint8Array(%s),signature:new Uint8Array(%s)}", sd.SignedPreKeyID, bjs(sd.SignedPrePub), bjs(sd.SignedPrePriv), bjs(sd.SignedPreSig))
-	rid := fmt.Sprintf("%d", sd.RegistrationID)
-	adv := fmt.Sprintf("new Uint8Array(%s)", bjs(sd.AdvSecretKey))
+	// IndexedDB stores ADV secret key as base64 string, not raw bytes
+	advB64 := base64.StdEncoding.EncodeToString(sd.AdvSecretKey)
 
 	return fmt.Sprintf(`(async()=>{
-const N=%s,I=%s,S=%s,R=%s,A=%s;
+const Npub=new Uint8Array(%[1]s), Npriv=new Uint8Array(%[2]s);
+const Spub=new Uint8Array(%[3]s), Spriv=new Uint8Array(%[4]s), Ssig=new Uint8Array(%[5]s);
+const Rid=%[6]d, SkeyId=%[7]d;
+const Adv=%q;
 const dbs=await indexedDB.databases();let r=0;
-let nDone=false,rDone=false;
 for(const i of dbs){
   const db=await new Promise((res,rej)=>{const r=indexedDB.open(i.name);r.onsuccess=e=>res(e.target.result);r.onerror=e=>rej(e.target.error)});
   for(const sn of db.objectStoreNames){
@@ -236,20 +236,21 @@ for(const i of dbs){
       c.onsuccess=e=>{
         const cur=e.target.result;
         if(!cur){res();return;}
-        const v=cur.value;
-        if(v&&typeof v==='object'){
-          const hp=v.pub instanceof Uint8Array&&v.pub.length===32;
-          const hr=v.priv instanceof Uint8Array&&v.priv.length===32;
-          if(hp&&hr){
-            if(!nDone){cur.update(N);nDone=true;}else cur.update(I);
-            r++;
-          }else if(typeof v.keyId==='number'&&hp&&hr&&v.signature instanceof Uint8Array&&v.signature.length){
-            cur.update(S);r++;
-          }else if(v instanceof Uint8Array&&v.length===32){
-            cur.update(A);r++;
-          }
-        }else if(!rDone&&typeof v==='number'&&Number.isInteger(v)&&v>=0&&v<4294967296){
-          cur.update(R);rDone=true;r++;
+        const v=cur.value, k=cur.key;
+        // signal-meta-store entries have string keys matching the entry name
+        if(typeof k==='string'){
+          if(k==='signal_static_privkey'){v.value.value=Npriv;cur.update(v);r++;}
+          else if(k==='signal_static_pubkey'){v.value.value=Npub;cur.update(v);r++;}
+          else if(k==='signal_reg_id'){v.value=Rid;cur.update(v);r++;}
+          else if(k==='WAADVSecretKey'){v.value=Adv;cur.update(v);r++;}
+        }
+        // signed-prekey-store: {keyId, keyPair:{privKey,pubKey}, signature}
+        if(v&&typeof v==='object'&&v.keyPair&&v.signature instanceof Uint8Array){
+          v.keyId=SkeyId;
+          v.keyPair.privKey=Spriv;
+          v.keyPair.pubKey=Spub;
+          v.signature=Ssig;
+          cur.update(v);r++;
         }
         cur.continue();
       };
@@ -259,7 +260,11 @@ for(const i of dbs){
   db.close();
 }
 return "OK: "+r+" keys replaced";
-})()`, noise, identity, sp, rid, adv)
+})()`,
+		bjs(sd.NoisePub), bjs(sd.NoisePriv),
+		bjs(sd.SignedPrePub), bjs(sd.SignedPrePriv), bjs(sd.SignedPreSig),
+		sd.RegistrationID, sd.SignedPreKeyID,
+		advB64)
 }
 
 func bjs(b []byte) string {
