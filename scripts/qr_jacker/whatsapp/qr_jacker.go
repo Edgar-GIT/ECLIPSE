@@ -386,13 +386,11 @@ func launchAttack(cfg attackCfg) {
 
 	fmt.Printf("%s[+] Page loaded (readyState=%s)%s\n", utils.Green, ready, utils.Reset)
 
-	// ── Dump diagnostics ──
 	var diagInfo string
 	chromedp.Run(tabCtx, chromedp.Evaluate(`JSON.stringify(window.__diag)`, &diagInfo))
 	fmt.Printf("\n%s========== DIAGNOSTICS AFTER LOAD ==========%s\n", utils.Blue, utils.Reset)
 	fmt.Printf("window.__diag: %s\n", diagInfo)
 
-	// Check registered Service Workers
 	var swInfo string
 	chromedp.Run(tabCtx, chromedp.Evaluate(`
 		(function() {
@@ -402,12 +400,10 @@ func launchAttack(cfg attackCfg) {
 	`, &swInfo))
 	fmt.Printf("ServiceWorker: %s\n", swInfo)
 
-	// Check localStorage
 	var lsCheck bool
 	chromedp.Run(tabCtx, chromedp.Evaluate(`!!window.localStorage`, &lsCheck))
 	fmt.Printf("localStorage: %v\n", lsCheck)
 
-	// Check sessionStorage
 	var ssCheck bool
 	chromedp.Run(tabCtx, chromedp.Evaluate(`!!window.sessionStorage`, &ssCheck))
 	fmt.Printf("sessionStorage: %v\n", ssCheck)
