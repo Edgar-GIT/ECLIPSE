@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -245,9 +246,38 @@ pairLoop:
 	}
 
 	time.Sleep(3 * time.Second)
+	ts := time.Now().Format("2006-01-02_15-04-05")
+	sessionDir := filepath.Join(sessionsDir, ts)
+	os.MkdirAll(sessionDir, 0755)
+
 	fmt.Println("[*] Dumping IndexedDB...")
-	saveChromeSession(browserCtx, userDir)
+	dumpDB(browserCtx, filepath.Join(sessionDir, "indexeddb.json"))
 	browserCancel()
+
+	fmt.Println("[*] Copying browser profile (browser closed)...")
+	profileDir := filepath.Join(sessionDir, "profile")
+	srcDefault := filepath.Join(userDir, "Default")
+	if _, err := os.Stat(srcDefault); err == nil {
+		cmd := exec.Command("cp", "-a", srcDefault, profileDir)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			fmt.Printf("  copy failed: %v\n%s", err, out)
+		} else {
+			fmt.Printf("  Profile: %s\n", profileDir)
+		}
+	}
+
+	sd := sessionData{Timestamp: ts}
+	jsonData, _ := json.MarshalIndent(sd, "", "  ")
+	os.WriteFile(filepath.Join(sessionDir, "session.json"), jsonData, 0644)
+
+	sessions := loadSessions()
+	id := fmt.Sprintf("%d", len(sessions))
+	sessions[id] = sessionMeta{
+		ID: id, Timestamp: ts, Browser: "chrome",
+		Profile: sessionDir, URL: "-",
+	}
+	saveSessions(sessions)
+
 	os.RemoveAll(userDir)
 
 	srvSt.mu.Lock()
@@ -263,30 +293,7 @@ pairLoop:
 	srvSt.mu.Unlock()
 }
 
-func saveChromeSession(browserCtx context.Context, userDir string) {
-	ts := time.Now().Format("2006-01-02_15-04-05")
-	sessionDir := filepath.Join(sessionsDir, ts)
-	os.MkdirAll(sessionDir, 0755)
 
-	indexPath := filepath.Join(sessionDir, "indexeddb.json")
-	dumpDB(browserCtx, indexPath)
-
-	sd := sessionData{Timestamp: ts}
-	jsonData, _ := json.MarshalIndent(sd, "", "  ")
-	sessionFile := filepath.Join(sessionDir, "session.json")
-	os.WriteFile(sessionFile, jsonData, 0644)
-
-	sessions := loadSessions()
-	id := fmt.Sprintf("%d", len(sessions))
-	sessions[id] = sessionMeta{
-		ID:        id,
-		Timestamp: ts,
-		Browser:   "chrome",
-		Profile:   sessionDir,
-		URL:       "-",
-	}
-	saveSessions(sessions)
-}
 
 func DiscoverReferenceProfile(outDir string) error {
 	os.Unsetenv("DISPLAY")
@@ -406,9 +413,9 @@ func ReplayChromeSession(profileDir string) error {
 	os.Unsetenv("DISPLAY")
 	sudoFixEnv()
 
-	indexedDBData, err := os.ReadFile(filepath.Join(profileDir, "indexeddb.json"))
-	if err != nil {
-		return fmt.Errorf("load indexeddb dump: %w", err)
+	savedProfile := filepath.Join(profileDir, "profile")
+	if _, err := os.Stat(savedProfile); os.IsNotExist(err) {
+		return fmt.Errorf("saved profile not found at %s", savedProfile)
 	}
 
 	userDir, err := os.MkdirTemp("", "whatsapp-replay-*")
@@ -416,6 +423,14 @@ func ReplayChromeSession(profileDir string) error {
 		return err
 	}
 	defer os.RemoveAll(userDir)
+
+	// Copy the saved profile into the new user data dir
+	destDefault := filepath.Join(userDir, "Default")
+	fmt.Println("[*] Copying saved profile into replay browser...")
+	cmd := exec.Command("cp", "-a", savedProfile, destDefault)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("copy profile: %w\n%s", err, out)
+	}
 
 	ctx, cancel, allocCancel, err := startChrome(context.Background(), userDir)
 	if err != nil {
@@ -427,19 +442,9 @@ func ReplayChromeSession(profileDir string) error {
 	if err := chromedp.Run(ctx, chromedp.Navigate("https://web.whatsapp.com")); err != nil {
 		return err
 	}
-	if err := chromedp.Run(ctx, chromedp.WaitVisible("canvas", chromedp.ByQuery)); err != nil {
-		return fmt.Errorf("wait QR: %w", err)
-	}
-	time.Sleep(2 * time.Second)
 
-	if err := injectIndexedDB(ctx, indexedDBData); err != nil {
-		return err
-	}
-
-	if err := chromedp.Run(ctx, chromedp.Reload()); err != nil {
-		return err
-	}
-	fmt.Println("[+] WhatsApp Web opened. Press Enter to disconnect.")
+	fmt.Println("[+] Replay browser opened. The session should load automatically.")
+	fmt.Println("    Press Enter to close.")
 	fmt.Scanln()
 	return nil
 }
