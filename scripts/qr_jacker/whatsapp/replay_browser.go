@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
 )
 
@@ -135,8 +136,8 @@ const jsDump = `
 })()`
 
 func dumpDB(ctx context.Context, path string) {
-	var r string
-	if err := chromedp.Run(ctx, chromedp.Evaluate(jsDump, &r)); err != nil {
+	r, err := evalDump(ctx)
+	if err != nil {
 		fmt.Printf("  dump failed: %v\n", err); return
 	}
 	var v interface{}
@@ -144,6 +145,16 @@ func dumpDB(ctx context.Context, path string) {
 	data, _ := json.MarshalIndent(v, "", "  ")
 	os.WriteFile(path, data, 0644)
 	fmt.Printf("  Saved: %s (%d bytes)\n", filepath.Base(path), len(data))
+}
+
+func evalDump(ctx context.Context) (string, error) {
+	var r string
+	if err := chromedp.Run(ctx, chromedp.Evaluate(jsDump, &r, func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
+		return p.WithAwaitPromise(true)
+	})); err != nil {
+		return "", err
+	}
+	return r, nil
 }
 
 func ReplayInBrowser(sd *sessionData) error {
@@ -172,8 +183,8 @@ func ReplayInBrowser(sd *sessionData) error {
 	}
 	time.Sleep(2 * time.Second)
 
-	var dump string
-	if err := chromedp.Run(ctx, chromedp.Evaluate(jsDump, &dump)); err != nil {
+	dump, err := evalDump(ctx)
+	if err != nil {
 		return fmt.Errorf("dump: %w", err)
 	}
 
@@ -190,7 +201,9 @@ func ReplayInBrowser(sd *sessionData) error {
 	injectJS := genInjectJS(dump, sd)
 
 	var result string
-	if err := chromedp.Run(ctx, chromedp.Evaluate(injectJS, &result)); err != nil {
+	if err := chromedp.Run(ctx, chromedp.Evaluate(injectJS, &result, func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
+		return p.WithAwaitPromise(true)
+	})); err != nil {
 		return fmt.Errorf("inject: %w", err)
 	}
 	fmt.Printf("[+] %s\n", result)
