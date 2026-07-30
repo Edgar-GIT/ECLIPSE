@@ -22,6 +22,8 @@ func DiscoverReferenceProfile(outDir string) error {
 	defer os.RemoveAll(userDir)
 
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.Flag("headless", false),
+		chromedp.Flag("ozone-platform-hint", "wayland"),
 		chromedp.UserDataDir(userDir), chromedp.NoFirstRun,
 		chromedp.NoDefaultBrowserCheck, chromedp.WindowSize(1280, 900),
 	)
@@ -111,6 +113,8 @@ func ReplayInBrowser(sd *sessionData) error {
 	defer os.RemoveAll(userDir)
 
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.Flag("headless", false),
+		chromedp.Flag("ozone-platform-hint", "wayland"),
 		chromedp.UserDataDir(userDir), chromedp.NoFirstRun,
 		chromedp.NoDefaultBrowserCheck, chromedp.WindowSize(1280, 900),
 	)
