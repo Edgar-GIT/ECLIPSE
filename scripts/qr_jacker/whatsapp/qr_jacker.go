@@ -347,16 +347,17 @@ func launchAttack(cfg attackCfg) {
 			}
 			navigator.storageBuckets = {
 				open: function(name, opts) {
-					var bucket = {
+					return Promise.resolve({
 						name: name,
-						persisted: opts && opts.persisted ? true : false,
 						persist: function() { return Promise.resolve(true); },
-						persisted: function() { return Promise.resolve(this.persisted); },
-						estimate: function() { return Promise.resolve({quota: 10*1024*1024, usage: 0}); }
-					};
-					return Promise.resolve(bucket);
+						persisted: function() { return Promise.resolve(true); },
+						estimate: function() { return Promise.resolve({quota: 1073741824, usage: 0}); },
+						setExpires: function() { return Promise.resolve(); },
+						getExpires: function() { return Promise.resolve(null); }
+					});
 				},
-				keys: function() { return Promise.resolve([]); }
+				keys: function() { return Promise.resolve([]); },
+				delete: function() { return Promise.resolve(); }
 			};
 		} catch(e) {
 			window.__diag.sbErrors.push(String(e));
