@@ -5,17 +5,31 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"time"
 
 	"github.com/chromedp/chromedp"
 )
 
-func ensureXDisplay() {
-	if d := os.Getenv("DISPLAY"); d != "" {
-		exec.Command("xauth", "generate", d, ".", "trusted").Run()
+func startChrome(ctx context.Context, userDir string) (context.Context, context.CancelFunc, context.CancelFunc, error) {
+	oldDisplay := os.Getenv("DISPLAY")
+	os.Unsetenv("DISPLAY")
+
+	opts := []chromedp.ExecAllocatorOption{
+		chromedp.NoSandbox,
+		chromedp.Flag("disable-gpu", true),
+		chromedp.NoFirstRun,
+		chromedp.NoDefaultBrowserCheck,
+		chromedp.UserDataDir(userDir),
+		chromedp.WindowSize(1280, 900),
 	}
+	allocCtx, allocCancel := chromedp.NewExecAllocator(ctx, opts...)
+	ctx2, cancel := chromedp.NewContext(allocCtx)
+
+	if oldDisplay != "" {
+		os.Setenv("DISPLAY", oldDisplay)
+	}
+	return ctx2, cancel, allocCancel, nil
 }
 
 func DiscoverReferenceProfile(outDir string) error {
@@ -28,21 +42,12 @@ func DiscoverReferenceProfile(outDir string) error {
 	}
 	defer os.RemoveAll(userDir)
 
-	ensureXDisplay()
-
-	opts := []chromedp.ExecAllocatorOption{
-		chromedp.NoSandbox,
-		chromedp.Flag("disable-gpu", true),
-		chromedp.NoFirstRun,
-		chromedp.NoDefaultBrowserCheck,
-		chromedp.UserDataDir(userDir),
-		chromedp.WindowSize(1280, 900),
+	ctx, cancel, allocCancel, err := startChrome(context.Background(), userDir)
+	if err != nil {
+		return err
 	}
-	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), opts...)
-	defer allocCancel()
-
-	ctx, cancel := chromedp.NewContext(allocCtx)
 	defer cancel()
+	defer allocCancel()
 
 	if err := chromedp.Run(ctx, chromedp.Navigate("https://web.whatsapp.com")); err != nil {
 		return err
@@ -123,21 +128,12 @@ func ReplayInBrowser(sd *sessionData) error {
 	}
 	defer os.RemoveAll(userDir)
 
-	ensureXDisplay()
-
-	opts := []chromedp.ExecAllocatorOption{
-		chromedp.NoSandbox,
-		chromedp.Flag("disable-gpu", true),
-		chromedp.NoFirstRun,
-		chromedp.NoDefaultBrowserCheck,
-		chromedp.UserDataDir(userDir),
-		chromedp.WindowSize(1280, 900),
+	ctx, cancel, allocCancel, err := startChrome(context.Background(), userDir)
+	if err != nil {
+		return err
 	}
-	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), opts...)
-	defer allocCancel()
-
-	ctx, cancel := chromedp.NewContext(allocCtx)
 	defer cancel()
+	defer allocCancel()
 
 	if err := chromedp.Run(ctx, chromedp.Navigate("https://web.whatsapp.com")); err != nil {
 		return err
