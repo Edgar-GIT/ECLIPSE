@@ -16,7 +16,6 @@ import (
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/store"
-	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
 	"rsc.io/qr"
 
@@ -215,6 +214,7 @@ func launchAttack(cfg attackCfg) {
 	start := time.Now()
 	timeout := 10 * time.Minute
 	sessionCaptured := false
+	var finalErrMsg string
 
 	for time.Since(start) < timeout {
 		currentAttack.mu.Lock()
@@ -223,6 +223,7 @@ func launchAttack(cfg attackCfg) {
 		currentAttack.mu.Unlock()
 
 		if errMsg != "" {
+			finalErrMsg = errMsg
 			fmt.Printf("\n%s[!] Error: %s%s\n", utils.Red, errMsg, utils.Reset)
 			break
 		}
@@ -238,7 +239,7 @@ func launchAttack(cfg attackCfg) {
 
 	if sessionCaptured {
 		fmt.Printf("\n%s[+] Session captured! Use it with option 3 (Replay).%s\n", utils.Green, utils.Reset)
-	} else if errMsg == "" {
+	} else if finalErrMsg == "" {
 		fmt.Printf("\n%s[!] No session captured within timeout.%s\n", utils.Yellow, utils.Reset)
 	}
 	utils.PauseForInput()
