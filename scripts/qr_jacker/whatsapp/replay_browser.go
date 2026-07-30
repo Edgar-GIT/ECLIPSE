@@ -12,9 +12,6 @@ import (
 )
 
 func startChrome(ctx context.Context, userDir string) (context.Context, context.CancelFunc, context.CancelFunc, error) {
-	oldDisplay := os.Getenv("DISPLAY")
-	os.Unsetenv("DISPLAY")
-
 	opts := []chromedp.ExecAllocatorOption{
 		chromedp.NoSandbox,
 		chromedp.Flag("disable-gpu", true),
@@ -25,14 +22,12 @@ func startChrome(ctx context.Context, userDir string) (context.Context, context.
 	}
 	allocCtx, allocCancel := chromedp.NewExecAllocator(ctx, opts...)
 	ctx2, cancel := chromedp.NewContext(allocCtx)
-
-	if oldDisplay != "" {
-		os.Setenv("DISPLAY", oldDisplay)
-	}
 	return ctx2, cancel, allocCancel, nil
 }
 
 func DiscoverReferenceProfile(outDir string) error {
+	os.Unsetenv("DISPLAY")
+
 	if err := os.MkdirAll(outDir, 0755); err != nil {
 		return err
 	}
@@ -122,6 +117,8 @@ func dumpDB(ctx context.Context, path string) {
 }
 
 func ReplayInBrowser(sd *sessionData) error {
+	os.Unsetenv("DISPLAY")
+
 	userDir, err := os.MkdirTemp("", "whatsapp-replay-*")
 	if err != nil {
 		return err
