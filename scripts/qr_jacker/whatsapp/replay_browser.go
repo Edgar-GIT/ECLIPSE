@@ -5,11 +5,55 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/chromedp/chromedp"
 )
+
+func debugEnv(label string, cmdEnv []string) {
+	fmt.Printf("\n===== %s =====\n", label)
+	env := cmdEnv
+	if env == nil {
+		env = os.Environ()
+	}
+	// Show ALL env vars sorted
+	keys := make([]string, 0, len(env))
+	m := make(map[string]string, len(env))
+	for _, e := range env {
+		kv := strings.SplitN(e, "=", 2)
+		k := kv[0]
+		v := ""
+		if len(kv) > 1 {
+			v = kv[1]
+		}
+		if _, dup := m[k]; !dup {
+			keys = append(keys, k)
+		}
+		m[k] = v
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		v := m[k]
+		// Truncate long values
+		if len(v) > 120 {
+			v = v[:120] + "..."
+		}
+		fmt.Printf("  %s=%s\n", k, v)
+	}
+	fmt.Printf("  [%d unique vars]\n", len(keys))
+	fmt.Printf("  cmd.Env == nil: %v\n", cmdEnv == nil)
+	fmt.Printf("  cmd.Env len: %d\n", len(cmdEnv))
+	if cmdEnv != nil {
+		for _, e := range cmdEnv {
+			fmt.Printf("  [cmd.Env] %s\n", e)
+		}
+	}
+	fmt.Printf("========================\n\n")
+}
 
 func startChrome(ctx context.Context, userDir string) (context.Context, context.CancelFunc, context.CancelFunc, error) {
 	opts := []chromedp.ExecAllocatorOption{
@@ -20,6 +64,9 @@ func startChrome(ctx context.Context, userDir string) (context.Context, context.
 		chromedp.NoDefaultBrowserCheck,
 		chromedp.UserDataDir(userDir),
 		chromedp.WindowSize(1280, 900),
+		chromedp.ModifyCmdFunc(func(cmd *exec.Cmd) {
+			debugEnv("cmd.Env in ModifyCmdFunc (before env setup)", cmd.Env)
+		}),
 	}
 	allocCtx, allocCancel := chromedp.NewExecAllocator(ctx, opts...)
 	ctx2, cancel := chromedp.NewContext(allocCtx)
